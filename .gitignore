@@ -1,0 +1,28 @@
+# Dependencias
+node_modules/
+
+# Build de Next.js
+.next/
+out/
+
+# Variables de Entorno (¡CRÍTICO!)
+.env
+.env*.local
+.env.production
+.env.development
+
+# Firebase
+firebase-admin.json
+.firebase/
+firestore.debug.log
+ui-debug.log
+firebase-debug.log
+
+# Sistema Operativo
+.DS_Store
+Thumbs.db
+
+# Otros
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
