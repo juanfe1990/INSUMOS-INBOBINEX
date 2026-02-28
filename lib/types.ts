@@ -3,6 +3,7 @@ export type Product = {
     name: string;
     description: string;
     categoryId: string;
+    slug: string; // Para URLs amigables
     categoryName?: string; // Lo guardamos en Firebase para lectura rápida
     imageUrl: string; // URL de la imagen principal (portada)
     gallery: string[]; // Array con todas las URLs de las imágenes
