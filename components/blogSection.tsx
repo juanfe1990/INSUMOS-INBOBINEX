@@ -30,7 +30,7 @@ export default function BlogSection({ posts }: BlogSectionProps) {
                             className="flex flex-col bg-white border border-gray-200 rounded-lg overflow-hidden hover:shadow-xl transition-shadow duration-300"
                         >
                             {/* Contenedor de la imagen */}
-                            <div className="relative h-56 w-full bg-gray-100 border-b border-gray-200">
+                            <div className="relative h-72 w-full bg-gray-100 border-b border-gray-200">
                                 <img
                                     src={post.image || '/api/placeholder/600/400'}
                                     alt={post.title}

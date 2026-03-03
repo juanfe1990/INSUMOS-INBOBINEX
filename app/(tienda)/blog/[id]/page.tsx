@@ -88,11 +88,11 @@ export default async function BlogPost({ params }: BlogPostProps) {
                     <div className="bg-white rounded-lg shadow-lg overflow-hidden border border-gray-100">
                         {/* Imagen principal del post */}
                         {postData.image && (
-                            <div className="w-full h-64 md:h-96 bg-gray-200">
+                            <div className="w-full h-72 md:h-96 bg-[#2E4040] flex items-center justify-center">
                                 <img
                                     src={postData.image}
                                     alt={postData.title}
-                                    className="w-full h-full object-cover"
+                                    className="w-auto h-full object-cover"
                                 />
                             </div>
                         )}

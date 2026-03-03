@@ -10,6 +10,7 @@ export function HeroSection() {
                 height={1566}
                 width={520}
                 priority
+                sizes="(max-width: 1024px) 32rem, 42rem"
                 unoptimized
                 className="object-contain absolute max-w-lg lg:max-w-2xl w-full right-0 rotate-12 scale-150"
             />
