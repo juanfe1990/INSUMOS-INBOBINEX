@@ -15,13 +15,13 @@ export function Navbar() {
                 <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-2 text-sm">
                     <div className="flex items-center gap-6">
                         <a
-                            href="https://wa.me/573001234567"
+                            href="https://wa.me/573004093658"
                             target="_blank"
                             rel="noopener noreferrer"
                             className="flex items-center gap-1.5 transition-colors hover:text-[#3F8346]"
                         >
                             <Phone className="h-3.5 w-3.5" />
-                            <span className="hidden sm:inline">+57 300 123 4567</span>
+                            <span className="hidden sm:inline">+57 300 409 3658</span>
                         </a>
                         <span className="flex items-center gap-1.5 transition-colors hover:text-[#3F8346]">
                             <Mail className="h-3.5 w-3.5" />
@@ -82,7 +82,7 @@ export function Navbar() {
 
                     {/* WhatsApp CTA */}
                     <a
-                        href="https://wa.me/573001234567"
+                        href="https://wa.me/573004093658"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="hidden items-center gap-2 rounded-md bg-[#3F8346] px-5 py-2.5 text-sm font-semibold text-[#FDFDFD] transition-colors hover:bg-[#2E4040] md:flex"
@@ -142,7 +142,7 @@ export function Navbar() {
                             </li>
                         </ul>
                         <a
-                            href="https://wa.me/573001234567"
+                            href="https://wa.me/573004093658"
                             target="_blank"
                             rel="noopener noreferrer"
                             className="mt-4 block rounded-md bg-[#3F8346] px-5 py-2.5 text-center text-sm font-semibold text-[#FDFDFD] transition-colors hover:bg-[#2E4040]"

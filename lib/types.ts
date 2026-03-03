@@ -35,3 +35,12 @@ export const CATEGORIES = [
     { name: 'Zuncho y Grapas', slug: 'zuncho-grapas' },
     { name: 'Otros Insumos', slug: 'otros-insumos' },
 ] as const;
+
+export interface PostData {
+    id: string;
+    title: string;
+    date: string;
+    description: string;
+    image?: string;
+    contentHtml?: string;
+}

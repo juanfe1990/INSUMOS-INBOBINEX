@@ -4,9 +4,17 @@ import { Footer } from '@/components/footer';
 import { Navbar } from '@/components/navbar';
 
 export const metadata: Metadata = {
-    title: 'Insumos INBOBINEX | Embalaje Especializado',
-    description:
-        'Venta de embalaje especializado: papel burbuja, cinta transparente y mas. Industria protegida, futuro sostenible.',
+    title: {
+        // Esto es magia pura: si una página hija define un título, le agrega " | INBOBINEX" automáticamente
+        template: '%s | INBOBINEX',
+        default: 'INBOBINEX - Embalaje especializado para tu industria',
+    },
+    description: 'Soluciones de embalaje innovadoras y de alta calidad...',
+    openGraph: {
+        siteName: 'INBOBINEX',
+        locale: 'es_CO',
+        type: 'website',
+    },
 };
 
 export default function RootLayout({

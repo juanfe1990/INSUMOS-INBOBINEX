@@ -4,7 +4,7 @@ function socialButtons() {
     return (
         <div className="fixed bottom-8 right-4 z-50 grid grid-cols-1 grid-rows-2 gap-4 place-content-center place-items-center">
             <a
-                href="https://wa.me/573101234567?text=Hola, me interesa cotizar productos de embalaje"
+                href="https://wa.me/573004093658?text=Hola, me interesa cotizar productos de embalaje"
                 className="bg-green-500 hover:bg-green-600 text-white p-3 rounded-full"
                 target="_blank"
                 rel="noopener noreferrer"

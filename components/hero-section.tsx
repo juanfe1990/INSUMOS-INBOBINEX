@@ -23,8 +23,10 @@ export function HeroSection() {
                 </h1>
                 <p className="mx-auto lg:mx-0 mt-6 max-w-2xl text-lg text-[#C8CDC9]">
                     En Insumos INBOBINEX estamos comprometidos con ofrecer soluciones de embalaje
-                    innovadoras y de alta calidad. Papel burbuja, cintas, stretch y mucho mas para
-                    proteger tus productos.
+                    innovadoras y de alta calidad. Trabajamos con cartón panal (Honeycomb),
+                    esquineros laminados, pallet cover, fajón de contención, bandas de contención,
+                    hoja de bloqueo, stretch y cintas, siempre bajo un principio claro: reducir
+                    impacto, optimizar costos y proteger con inteligencia.
                 </p>
                 <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
                     <a
