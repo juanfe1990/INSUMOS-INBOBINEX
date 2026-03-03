@@ -13,8 +13,8 @@ export default function HomePage() {
     return (
         <div>
             <HeroSection />
-            <ProductsSection />
             <AboutSection />
+            <ProductsSection />
             <FeaturesStrip />
             <ContactSection />
             <SocialButtons />
