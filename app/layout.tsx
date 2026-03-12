@@ -1,3 +1,4 @@
+import { GoogleTagManager } from '@next/third-parties/google';
 import './globals.css';
 
 import { Inter, Montserrat } from 'next/font/google';
@@ -10,6 +11,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             lang="es"
             className={`${inter.variable} ${montserrat.variable} font-sans antialiased`}
         >
+            <GoogleTagManager gtmId="GTM-KJJV49ZJ" />
             <body>{children}</body>
         </html>
     );

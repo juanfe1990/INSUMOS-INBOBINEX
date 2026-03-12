@@ -139,7 +139,7 @@ export default async function ProductDetailPage({ params }: Props) {
                             <h3 className="font-heading text-lg font-semibold text-[#2E4040]">
                                 Descripción detallada
                             </h3>
-                            <div className="mt-4 prose prose-sm sm:prose-base text-[#949E97]">
+                            <div className="mt-4 prose prose-sm sm:prose-base text-black/80">
                                 <p className="whitespace-pre-wrap leading-relaxed">
                                     {product.description ||
                                         'Este producto ofrece una excelente solución para la protección y el manejo de tu mercancía. Contáctanos para conocer especificaciones técnicas detalladas y disponibilidad de inventario.'}
