@@ -44,10 +44,10 @@ export function ContactSection() {
                                     Correo
                                 </h3>
                                 <a
-                                    href="mailto:ventas@inbobinex.com"
+                                    href="mailto:gerencia@insumosinbobinex.com"
                                     className="mt-1 text-[#949E97] transition-colors hover:text-[#3F8346]"
                                 >
-                                    ventas@inbobinex.com
+                                    gerencia@insumosinbobinex.com
                                 </a>
                             </div>
                         </div>

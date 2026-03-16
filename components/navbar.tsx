@@ -25,7 +25,7 @@ export function Navbar() {
                         </a>
                         <span className="flex items-center gap-1.5 transition-colors hover:text-[#3F8346]">
                             <Mail className="h-3.5 w-3.5" />
-                            <span className="hidden sm:inline">ventas@inbobinex.com</span>
+                            <span className="hidden sm:inline">gerencia@insumosinbobinex.com</span>
                         </span>
                     </div>
                     <span className="text-xs text-[#C8CDC9]">
