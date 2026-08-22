@@ -5,6 +5,7 @@ import { FeaturesStrip } from '@/components/features-strip';
 import { HeroSection } from '@/components/hero-section';
 import { ProductsSection } from '@/components/products-section';
 import SocialButtons from '@/components/socialButtons';
+import { StretchSection } from '@/components/stretch-section';
 import { getSortedPostsData } from '@/lib/post';
 import { PostData } from '@/lib/types';
 
@@ -14,6 +15,7 @@ export default function HomePage() {
         <div>
             <HeroSection />
             <AboutSection />
+            <StretchSection />
             <ProductsSection />
             <FeaturesStrip />
             <ContactSection />

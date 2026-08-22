@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad30" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F4F7F5"/>
+      <stop offset="100%" stop-color="#E2E8E4"/>
+    </linearGradient>
+    <linearGradient id="filmGrad30" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#C8CDC9" stop-opacity="0.85"/>
+      <stop offset="25%" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="60%" stop-color="#A5B5A8" stop-opacity="0.75"/>
+      <stop offset="90%" stop-color="#3F8346" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#2E4040" stop-opacity="0.8"/>
+    </linearGradient>
+    <linearGradient id="coreGrad30" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#CBB284"/>
+      <stop offset="50%" stop-color="#E5D3B3"/>
+      <stop offset="100%" stop-color="#9C8052"/>
+    </linearGradient>
+    <filter id="shadow30" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="15" stdDeviation="12" flood-color="#2E4040" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <rect width="500" height="500" rx="24" fill="url(#bgGrad30)"/>
+  <path d="M 0,100 L 500,100 M 0,200 L 500,200 M 0,300 L 500,300 M 0,400 L 500,400 M 100,0 L 100,500 M 200,0 L 200,500 M 300,0 L 300,500 M 400,0 L 400,500" stroke="#3F8346" stroke-opacity="0.06" stroke-width="1"/>
+
+  <ellipse cx="250" cy="440" rx="115" ry="20" fill="#2E4040" opacity="0.15" filter="blur(8px)"/>
+
+  <!-- Center Roll 30 cm (Height = 200px) -->
+  <g transform="translate(0, 10)" filter="url(#shadow30)">
+    <ellipse cx="250" cy="120" rx="95" ry="25" fill="url(#filmGrad30)"/>
+    <ellipse cx="250" cy="120" rx="52" ry="13" fill="url(#coreGrad30)"/>
+    <ellipse cx="250" cy="120" rx="38" ry="9" fill="#6A532C"/>
+
+    <!-- Roll Body (Height = 200px) -->
+    <path d="M 155,120 L 155,320 A 95,25 0 0,0 345,320 L 345,120 A 95,25 0 0,1 155,120 Z" fill="url(#filmGrad30)"/>
+    
+    <path d="M 190,120 L 190,320" stroke="#FFFFFF" stroke-width="8" opacity="0.7" filter="blur(2px)"/>
+    <path d="M 305,120 L 305,320" stroke="#3F8346" stroke-width="4" opacity="0.3"/>
+
+    <path d="M 345,320 Q 395,310 425,340 Q 385,360 325,340" fill="url(#filmGrad30)" opacity="0.5"/>
+    <ellipse cx="250" cy="320" rx="95" ry="25" fill="none" stroke="#2E4040" stroke-opacity="0.2" stroke-width="2"/>
+  </g>
+
+  <g transform="translate(40, 40)">
+    <rect x="0" y="0" width="130" height="42" rx="21" fill="#3F8346"/>
+    <text x="65" y="26" text-anchor="middle" fill="#FFFFFF" font-family="sans-serif" font-weight="bold" font-size="18">30 cm</text>
+  </g>
+
+  <g transform="translate(330, 40)">
+    <rect x="0" y="0" width="130" height="42" rx="21" fill="#2E4040"/>
+    <text x="65" y="26" text-anchor="middle" fill="#FFFFFF" font-family="sans-serif" font-weight="600" font-size="15">Estándar</text>
+  </g>
+
+  <g transform="translate(90, 130)">
+    <line x1="0" y1="0" x2="0" y2="200" stroke="#3F8346" stroke-width="2" stroke-dasharray="4 4"/>
+    <polygon points="0,0 -5,10 5,10" fill="#3F8346"/>
+    <polygon points="0,200 -5,190 5,190" fill="#3F8346"/>
+    <text x="-15" y="103" text-anchor="middle" fill="#2E4040" font-family="sans-serif" font-weight="bold" font-size="14" transform="rotate(-90 -15 103)">30 cm</text>
+  </g>
+</svg>

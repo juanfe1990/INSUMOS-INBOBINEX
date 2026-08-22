@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad15" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F4F7F5"/>
+      <stop offset="100%" stop-color="#E2E8E4"/>
+    </linearGradient>
+    <linearGradient id="filmGrad15" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#C8CDC9" stop-opacity="0.85"/>
+      <stop offset="25%" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="60%" stop-color="#A5B5A8" stop-opacity="0.75"/>
+      <stop offset="90%" stop-color="#3F8346" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#2E4040" stop-opacity="0.8"/>
+    </linearGradient>
+    <linearGradient id="coreGrad15" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#CBB284"/>
+      <stop offset="50%" stop-color="#E5D3B3"/>
+      <stop offset="100%" stop-color="#9C8052"/>
+    </linearGradient>
+    <filter id="shadow15" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="15" stdDeviation="12" flood-color="#2E4040" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <rect width="500" height="500" rx="24" fill="url(#bgGrad15)"/>
+  <path d="M 0,100 L 500,100 M 0,200 L 500,200 M 0,300 L 500,300 M 0,400 L 500,400 M 100,0 L 100,500 M 200,0 L 200,500 M 300,0 L 300,500 M 400,0 L 400,500" stroke="#3F8346" stroke-opacity="0.06" stroke-width="1"/>
+
+  <ellipse cx="250" cy="430" rx="125" ry="22" fill="#2E4040" opacity="0.15" filter="blur(8px)"/>
+
+  <!-- Center Roll 15 cm (Height = 120px) -->
+  <g transform="translate(0, 50)" filter="url(#shadow15)">
+    <ellipse cx="250" cy="170" rx="105" ry="28" fill="url(#filmGrad15)"/>
+    <ellipse cx="250" cy="170" rx="58" ry="15" fill="url(#coreGrad15)"/>
+    <ellipse cx="250" cy="170" rx="43" ry="11" fill="#6A532C"/>
+
+    <!-- Roll Body (Height = 120px) -->
+    <path d="M 145,170 L 145,290 A 105,28 0 0,0 355,290 L 355,170 A 105,28 0 0,1 145,170 Z" fill="url(#filmGrad15)"/>
+    
+    <path d="M 185,170 L 185,290" stroke="#FFFFFF" stroke-width="8" opacity="0.7" filter="blur(2px)"/>
+    <path d="M 310,170 L 310,290" stroke="#3F8346" stroke-width="4" opacity="0.3"/>
+
+    <path d="M 355,290 Q 405,280 435,310 Q 395,330 335,310" fill="url(#filmGrad15)" opacity="0.5"/>
+    <ellipse cx="250" cy="290" rx="105" ry="28" fill="none" stroke="#2E4040" stroke-opacity="0.2" stroke-width="2"/>
+  </g>
+
+  <g transform="translate(40, 40)">
+    <rect x="0" y="0" width="130" height="42" rx="21" fill="#3F8346"/>
+    <text x="65" y="26" text-anchor="middle" fill="#FFFFFF" font-family="sans-serif" font-weight="bold" font-size="18">15 cm</text>
+  </g>
+
+  <g transform="translate(330, 40)">
+    <rect x="0" y="0" width="130" height="42" rx="21" fill="#2E4040"/>
+    <text x="65" y="26" text-anchor="middle" fill="#FFFFFF" font-family="sans-serif" font-weight="600" font-size="15">Bandeado</text>
+  </g>
+
+  <g transform="translate(80, 170)">
+    <line x1="0" y1="50" x2="0" y2="170" stroke="#3F8346" stroke-width="2" stroke-dasharray="4 4"/>
+    <polygon points="0,50 -5,60 5,60" fill="#3F8346"/>
+    <polygon points="0,170 -5,160 5,160" fill="#3F8346"/>
+    <text x="-15" y="113" text-anchor="middle" fill="#2E4040" font-family="sans-serif" font-weight="bold" font-size="14" transform="rotate(-90 -15 113)">15 cm</text>
+  </g>
+</svg>
