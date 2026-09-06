@@ -1,61 +1,149 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
   <defs>
-    <linearGradient id="bgGrad45" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#F4F7F5"/>
-      <stop offset="100%" stop-color="#E2E8E4"/>
+    <!-- Background Studio Radial Light -->
+    <radialGradient id="studioLight45" cx="50%" cy="38%" r="65%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="60%" stop-color="#F3F6F4"/>
+      <stop offset="100%" stop-color="#E1E7E3"/>
+    </radialGradient>
+
+    <!-- Translucent Clear Film Body Gradient -->
+    <linearGradient id="filmBodyGrad45" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#AFC0B4" stop-opacity="0.9"/>
+      <stop offset="8%" stop-color="#DCE5DF" stop-opacity="0.95"/>
+      <stop offset="22%" stop-color="#FFFFFF" stop-opacity="0.98"/>
+      <stop offset="38%" stop-color="#E2EBE5" stop-opacity="0.9"/>
+      <stop offset="65%" stop-color="#CAD7CE" stop-opacity="0.88"/>
+      <stop offset="85%" stop-color="#9FB2A5" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#55695C" stop-opacity="0.95"/>
     </linearGradient>
-    <linearGradient id="filmGrad45" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#C8CDC9" stop-opacity="0.85"/>
-      <stop offset="25%" stop-color="#FFFFFF" stop-opacity="0.95"/>
-      <stop offset="60%" stop-color="#A5B5A8" stop-opacity="0.75"/>
-      <stop offset="90%" stop-color="#3F8346" stop-opacity="0.4"/>
-      <stop offset="100%" stop-color="#2E4040" stop-opacity="0.8"/>
+
+    <!-- Top Coiled Film Surface -->
+    <radialGradient id="topFilmGrad45" cx="45%" cy="40%" r="55%">
+      <stop offset="0%" stop-color="#E4EBE6"/>
+      <stop offset="50%" stop-color="#D0DDD4"/>
+      <stop offset="85%" stop-color="#B1C3B7"/>
+      <stop offset="100%" stop-color="#8DA193"/>
+    </radialGradient>
+
+    <!-- Kraft Paperboard Core Tube Bevel -->
+    <linearGradient id="kraftRimGrad45" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E8D7B8"/>
+      <stop offset="35%" stop-color="#CCA978"/>
+      <stop offset="70%" stop-color="#AF8C58"/>
+      <stop offset="100%" stop-color="#DBC5A0"/>
     </linearGradient>
-    <linearGradient id="coreGrad45" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#CBB284"/>
-      <stop offset="50%" stop-color="#E5D3B3"/>
-      <stop offset="100%" stop-color="#9C8052"/>
+
+    <!-- Deep Inner Core Cavity Shadow -->
+    <linearGradient id="coreHoleGrad45" x1="40%" y1="0%" x2="60%" y2="100%">
+      <stop offset="0%" stop-color="#2D1F0E"/>
+      <stop offset="40%" stop-color="#191007"/>
+      <stop offset="100%" stop-color="#0A0602"/>
     </linearGradient>
-    <filter id="shadow45" x="-10%" y="-10%" width="120%" height="130%">
-      <feDropShadow dx="0" dy="15" stdDeviation="12" flood-color="#2E4040" flood-opacity="0.18"/>
+
+    <!-- Film Tail Translucent Sheen -->
+    <linearGradient id="tailGrad45" x1="0%" y1="0%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#EAF1EC" stop-opacity="0.75"/>
+      <stop offset="50%" stop-color="#FFFFFF" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#B2C5B8" stop-opacity="0.15"/>
+    </linearGradient>
+
+    <!-- Specular Reflection Filter -->
+    <filter id="softGlow45" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+
+    <filter id="floorShadowBlur45" x="-30%" y="-40%" width="160%" height="180%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+    <filter id="contactShadowBlur45" x="-20%" y="-30%" width="140%" height="160%">
+      <feGaussianBlur stdDeviation="4"/>
     </filter>
   </defs>
 
-  <rect width="500" height="500" rx="24" fill="url(#bgGrad45)"/>
-  <path d="M 0,100 L 500,100 M 0,200 L 500,200 M 0,300 L 500,300 M 0,400 L 500,400 M 100,0 L 100,500 M 200,0 L 200,500 M 300,0 L 300,500 M 400,0 L 400,500" stroke="#3F8346" stroke-opacity="0.06" stroke-width="1"/>
+  <!-- Studio Background Plate -->
+  <rect width="500" height="500" rx="28" fill="url(#studioLight45)"/>
+  
+  <!-- Subtle Industrial Grid Watermark -->
+  <g stroke="#3F8346" stroke-opacity="0.05" stroke-width="1">
+    <line x1="0" y1="125" x2="500" y2="125"/>
+    <line x1="0" y1="250" x2="500" y2="250"/>
+    <line x1="0" y1="375" x2="500" y2="375"/>
+    <line x1="125" y1="0" x2="125" y2="500"/>
+    <line x1="250" y1="0" x2="250" y2="500"/>
+    <line x1="375" y1="0" x2="375" y2="500"/>
+  </g>
 
-  <ellipse cx="250" cy="455" rx="105" ry="18" fill="#2E4040" opacity="0.15" filter="blur(8px)"/>
+  <!-- Ground Diffuse Drop Shadow -->
+  <ellipse cx="250" cy="435" rx="135" ry="18" fill="#1C2E24" opacity="0.18" filter="url(#floorShadowBlur45)"/>
+  <!-- Ground Tight Contact Occlusion Shadow -->
+  <ellipse cx="250" cy="418" rx="96" ry="11" fill="#0E1A13" opacity="0.45" filter="url(#contactShadowBlur45)"/>
 
-  <!-- Center Roll 45 cm (Height = 280px) -->
-  <g transform="translate(0, 0)" filter="url(#shadow45)">
-    <ellipse cx="250" cy="85" rx="88" ry="23" fill="url(#filmGrad45)"/>
-    <ellipse cx="250" cy="85" rx="48" ry="12" fill="url(#coreGrad45)"/>
-    <ellipse cx="250" cy="85" rx="35" ry="8" fill="#6A532C"/>
+  <!-- ================= ROLL ASSEMBLY (45 cm Paletizado, Height = 280px) ================= -->
+  <g id="stretchRoll45">
+    <!-- Unwrapped Film Tail -->
+    <path d="M 338,395 C 383,380 418,405 450,385 C 436,425 392,430 326,410 Z" 
+          fill="url(#tailGrad45)" stroke="#FFFFFF" stroke-width="1" stroke-opacity="0.6"/>
+    <path d="M 338,395 Q 398,380 450,385" stroke="#FFFFFF" stroke-width="1.5" stroke-opacity="0.8" fill="none"/>
 
-    <!-- Roll Body (Height = 280px) -->
-    <path d="M 162,85 L 162,365 A 88,23 0 0,0 338,365 L 338,85 A 88,23 0 0,1 162,85 Z" fill="url(#filmGrad45)"/>
+    <!-- Bottom Rim (Anchored at Y = 405) -->
+    <ellipse cx="250" cy="405" rx="92" ry="23" fill="#75887B" opacity="0.6"/>
+
+    <!-- Roll Cylinder Body (Height = 280px, from Y = 125 to Y = 405) -->
+    <path d="M 158,125 L 158,405 A 92,23 0 0,0 342,405 L 342,125 A 92,23 0 0,1 158,125 Z" 
+          fill="url(#filmBodyGrad45)"/>
+
+    <!-- Winding Layers -->
+    <path d="M 158,180 A 92,23 0 0,0 342,180" stroke="#FFFFFF" stroke-width="0.7" stroke-opacity="0.4" fill="none"/>
+    <path d="M 158,235 A 92,23 0 0,0 342,235" stroke="#3F8346" stroke-width="0.5" stroke-opacity="0.25" fill="none"/>
+    <path d="M 158,290 A 92,23 0 0,0 342,290" stroke="#FFFFFF" stroke-width="0.8" stroke-opacity="0.4" fill="none"/>
+    <path d="M 158,345 A 92,23 0 0,0 342,345" stroke="#3F8346" stroke-width="0.5" stroke-opacity="0.25" fill="none"/>
+
+    <!-- Primary Vertical Specular Light Beam -->
+    <rect x="190" y="125" width="22" height="281" fill="#FFFFFF" opacity="0.75" filter="url(#softGlow45)"/>
+    <rect x="195" y="125" width="8" height="281" fill="#FFFFFF" opacity="0.95"/>
+
+    <!-- Secondary Soft Fill Light -->
+    <rect x="244" y="125" width="14" height="281" fill="#FFFFFF" opacity="0.25"/>
     
-    <path d="M 195,85 L 195,365" stroke="#FFFFFF" stroke-width="8" opacity="0.7" filter="blur(2px)"/>
-    <path d="M 300,85 L 300,365" stroke="#3F8346" stroke-width="4" opacity="0.3"/>
+    <!-- Right Dark Occlusion Edge Gradient -->
+    <path d="M 318,125 L 318,405 A 92,23 0 0,0 342,405 L 342,125 Z" fill="#3D4F43" opacity="0.35"/>
 
-    <path d="M 338,365 Q 388,355 418,385 Q 378,405 318,385" fill="url(#filmGrad45)" opacity="0.5"/>
-    <ellipse cx="250" cy="365" rx="88" ry="23" fill="none" stroke="#2E4040" stroke-opacity="0.2" stroke-width="2"/>
+    <!-- TOP SURFACE: Coiled Plastic Film (Centered at Y = 125) -->
+    <ellipse cx="250" cy="125" rx="92" ry="23" fill="url(#topFilmGrad45)" stroke="#9EB0A4" stroke-width="0.5"/>
+    <ellipse cx="250" cy="125" rx="80" ry="20" fill="none" stroke="#FFFFFF" stroke-width="0.8" stroke-opacity="0.6"/>
+    <ellipse cx="250" cy="125" rx="68" ry="17" fill="none" stroke="#7A8D80" stroke-width="0.6" stroke-opacity="0.5"/>
+    <ellipse cx="250" cy="125" rx="56" ry="14" fill="none" stroke="#FFFFFF" stroke-width="0.8" stroke-opacity="0.6"/>
+    <ellipse cx="250" cy="125" rx="45" ry="11.2" fill="none" stroke="#687B6E" stroke-width="0.7" stroke-opacity="0.4"/>
+
+    <!-- CARDBOARD CORE -->
+    <ellipse cx="250" cy="125" rx="40" ry="10" fill="url(#kraftRimGrad45)" stroke="#7C5D30" stroke-width="0.5"/>
+    <ellipse cx="250" cy="125" rx="30" ry="7.5" fill="url(#coreHoleGrad45)"/>
+    <path d="M 223,125 A 30,7.5 0 0,0 277,125" stroke="#7D5C2E" stroke-width="1.2" stroke-opacity="0.8" fill="none"/>
+    <ellipse cx="250" cy="125" rx="29" ry="7" fill="none" stroke="#000000" stroke-width="1.5" stroke-opacity="0.7"/>
+
+    <!-- Top Rim Gloss Reflection -->
+    <path d="M 162,125 A 92,23 0 0,0 338,125" stroke="#FFFFFF" stroke-width="1.8" stroke-opacity="0.7" fill="none"/>
   </g>
 
-  <g transform="translate(40, 40)">
-    <rect x="0" y="0" width="130" height="42" rx="21" fill="#3F8346"/>
-    <text x="65" y="26" text-anchor="middle" fill="#FFFFFF" font-family="sans-serif" font-weight="bold" font-size="18">45 cm</text>
+  <!-- Clean Floating Header Badges -->
+  <g transform="translate(25, 22)">
+    <rect x="0" y="0" width="115" height="36" rx="18" fill="#3F8346" filter="drop-shadow(0 4px 8px rgba(63,131,70,0.25))"/>
+    <text x="57" y="23" text-anchor="middle" fill="#FFFFFF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="800" font-size="15" letter-spacing="0.5">45 cm</text>
   </g>
 
-  <g transform="translate(330, 40)">
-    <rect x="0" y="0" width="130" height="42" rx="21" fill="#2E4040"/>
-    <text x="65" y="26" text-anchor="middle" fill="#FFFFFF" font-family="sans-serif" font-weight="600" font-size="15">Paletizado</text>
+  <g transform="translate(360, 22)">
+    <rect x="0" y="0" width="115" height="36" rx="18" fill="#2E4040" filter="drop-shadow(0 4px 8px rgba(46,64,64,0.2))"/>
+    <text x="57" y="23" text-anchor="middle" fill="#FFFFFF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="700" font-size="13" letter-spacing="0.3">Paletizado</text>
   </g>
 
-  <g transform="translate(100, 85)">
-    <line x1="0" y1="0" x2="0" y2="280" stroke="#3F8346" stroke-width="2" stroke-dasharray="4 4"/>
-    <polygon points="0,0 -5,10 5,10" fill="#3F8346"/>
-    <polygon points="0,280 -5,270 5,270" fill="#3F8346"/>
-    <text x="-15" y="143" text-anchor="middle" fill="#2E4040" font-family="sans-serif" font-weight="bold" font-size="14" transform="rotate(-90 -15 143)">45 cm</text>
+  <!-- Height Dimension Callout -->
+  <g transform="translate(85, 125)">
+    <line x1="0" y1="0" x2="0" y2="280" stroke="#3F8346" stroke-width="1.8" stroke-dasharray="3 3"/>
+    <polygon points="0,0 -3.5,8 3.5,8" fill="#3F8346"/>
+    <polygon points="0,280 -3.5,272 3.5,272" fill="#3F8346"/>
+    <rect x="-34" y="125" width="44" height="24" rx="5" fill="#FFFFFF" stroke="#3F8346" stroke-width="1.5" filter="drop-shadow(0 2px 4px rgba(0,0,0,0.08))"/>
+    <text x="-12" y="141" text-anchor="middle" fill="#2E4040" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="800" font-size="10.5">45 cm</text>
   </g>
 </svg>
