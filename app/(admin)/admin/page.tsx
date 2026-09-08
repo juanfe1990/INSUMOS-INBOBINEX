@@ -1,7 +1,10 @@
 'use client';
 
 import type { Category, Product } from '@/lib/types';
+import OrdersPanel from '@/components/admin/orders-panel';
+import ClientsPanel from '@/components/admin/clients-panel';
 import {
+    ClipboardList,
     Image as ImageIcon,
     Loader2,
     Package,
@@ -10,6 +13,7 @@ import {
     Tags,
     Trash2,
     Upload,
+    Users,
     X,
 } from 'lucide-react';
 import Image from 'next/image';
@@ -35,7 +39,10 @@ const emptyProductForm: ProductFormState = {
 };
 
 export default function AdminPage() {
-    // --- Estados Generales ---
+    // --- Pestaña Activa ---
+    const [activeTab, setActiveTab] = useState<'orders' | 'clients' | 'catalog'>('orders');
+
+    // --- Estados Generales Catálogo Web (Firebase) ---
     const [products, setProducts] = useState<Product[]>([]);
     const [categories, setCategories] = useState<Category[]>([]);
     const [loading, setLoading] = useState(true);
@@ -294,8 +301,52 @@ export default function AdminPage() {
 
     return (
         <div>
-            {/* --- HEADER --- */}
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            {/* --- NAVEGACIÓN SUPERIOR DE MÓDULOS --- */}
+            <div className="mb-8 flex flex-wrap items-center gap-3 border-b border-[#C8CDC9] pb-4">
+                <button
+                    onClick={() => setActiveTab('orders')}
+                    className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
+                        activeTab === 'orders'
+                            ? 'bg-[#2E4040] text-[#FDFDFD] shadow-sm'
+                            : 'border border-[#C8CDC9] bg-white text-[#2E4040] hover:bg-[#C8CDC9]/20'
+                    }`}
+                >
+                    <ClipboardList className="h-4 w-4 text-[#3F8346]" />
+                    Pedidos & Planta (CRM)
+                </button>
+                <button
+                    onClick={() => setActiveTab('clients')}
+                    className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
+                        activeTab === 'clients'
+                            ? 'bg-[#2E4040] text-[#FDFDFD] shadow-sm'
+                            : 'border border-[#C8CDC9] bg-white text-[#2E4040] hover:bg-[#C8CDC9]/20'
+                    }`}
+                >
+                    <Users className="h-4 w-4 text-[#3F8346]" />
+                    Clientes (CRM)
+                </button>
+                <button
+                    onClick={() => setActiveTab('catalog')}
+                    className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
+                        activeTab === 'catalog'
+                            ? 'bg-[#2E4040] text-[#FDFDFD] shadow-sm'
+                            : 'border border-[#C8CDC9] bg-white text-[#2E4040] hover:bg-[#C8CDC9]/20'
+                    }`}
+                >
+                    <Package className="h-4 w-4 text-[#3F8346]" />
+                    Catálogo Web (Firebase)
+                </button>
+            </div>
+
+            {/* --- VISTAS CRM SUPABASE --- */}
+            {activeTab === 'orders' && <OrdersPanel />}
+            {activeTab === 'clients' && <ClientsPanel />}
+
+            {/* --- VISTA CATÁLOGO WEB (FIREBASE) --- */}
+            {activeTab === 'catalog' && (
+                <div>
+                    {/* --- HEADER --- */}
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                     <h1 className="font-heading text-2xl font-bold text-[#2E4040]">
                         Gestionar Inventario
@@ -766,6 +817,8 @@ export default function AdminPage() {
                             </div>
                         </form>
                     </div>
+                </div>
+            )}
                 </div>
             )}
         </div>

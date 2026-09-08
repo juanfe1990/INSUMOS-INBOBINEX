@@ -20,8 +20,8 @@ export default function AdminLogin() {
 
         try {
             await signIn(email, password);
-        } catch {
-            setError('Correo o contraseña incorrectos');
+        } catch (err: any) {
+            setError(err?.message || 'Correo o contraseña incorrectos');
         } finally {
             setLoading(false);
         }

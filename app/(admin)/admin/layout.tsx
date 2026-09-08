@@ -8,9 +8,9 @@ import Link from 'next/link';
 import { Toaster } from 'sonner';
 
 function AdminShell({ children }: { children: React.ReactNode }) {
-    const { user, loading, signOut } = useAuth();
+    const { user, role, loading, signOut } = useAuth();
 
-    if (loading) {
+    if (loading || (user && !role)) {
         return (
             <div className="flex min-h-screen items-center justify-center bg-[#2E4040]">
                 <Loader2 className="h-10 w-10 animate-spin text-[#3F8346]" />
@@ -18,7 +18,8 @@ function AdminShell({ children }: { children: React.ReactNode }) {
         );
     }
 
-    if (!user) {
+    // Los operarios o usuarios sin autenticar NUNCA pasan al dashboard; se quedan en login
+    if (!user || role === 'operario') {
         return <AdminLogin />;
     }
 
@@ -47,7 +48,14 @@ function AdminShell({ children }: { children: React.ReactNode }) {
                         </div>
                     </div>
                     <div className="flex items-center gap-4">
-                        <span className="hidden text-xs text-[#949E97] sm:block">{user.email}</span>
+                        <div className="hidden flex-col items-end sm:flex">
+                            <span className="text-xs text-[#FDFDFD]">{user.email}</span>
+                            {role && (
+                                <span className="rounded bg-[#3F8346]/40 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-green-300">
+                                    Rol: {role}
+                                </span>
+                            )}
+                        </div>
                         <button
                             onClick={signOut}
                             className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-[#C8CDC9] transition-colors hover:bg-[#FDFDFD]/10 hover:text-[#FDFDFD]"
