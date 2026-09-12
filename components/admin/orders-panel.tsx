@@ -34,6 +34,32 @@ const PRIORITY_CONFIG: Record<OrderPriority, { label: string; bg: string; text: 
     urgente: { label: '¡Urgente!', bg: 'bg-red-100', text: 'text-red-700 font-bold animate-pulse' },
 };
 
+type NumericDraft = number | '';
+
+type OrderItemDraft = {
+    notes: string;
+    quantity: NumericDraft;
+    custom_length_cm: NumericDraft;
+    caliber_microns: NumericDraft;
+    weight_grams: NumericDraft;
+    unit_price: NumericDraft;
+};
+
+function parseNumericDraft(raw: string): NumericDraft {
+    if (raw.trim() === '') return '';
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : '';
+}
+
+function toNumber(value: NumericDraft, fallback = 0): number {
+    if (value === '') return fallback;
+    return Number.isFinite(value) ? value : fallback;
+}
+
+function isPositiveNumber(value: NumericDraft, min = 0.01): boolean {
+    return value !== '' && Number.isFinite(value) && value >= min;
+}
+
 export default function OrdersPanel() {
     const supabase = createClient();
     const [orders, setOrders] = useState<Order[]>([]);
@@ -53,7 +79,7 @@ export default function OrdersPanel() {
     const [notes, setNotes] = useState('');
 
     // Bobinas del pedido
-    const [items, setItems] = useState([
+    const [items, setItems] = useState<OrderItemDraft[]>([
         {
             notes: "Stretch Transparente",
             quantity: 10,
@@ -63,6 +89,14 @@ export default function OrdersPanel() {
             unit_price: 25000,
         },
     ]);
+
+    const updateItemNumber = (idx: number, field: keyof Omit<OrderItemDraft, 'notes'>, raw: string) => {
+        setItems((prev) => {
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], [field]: parseNumericDraft(raw) };
+            return updated;
+        });
+    };
 
     // Cargar datos iniciales
     const fetchData = async () => {
@@ -147,13 +181,26 @@ export default function OrdersPanel() {
             return;
         }
 
+        const invalidItem = items.find(
+            (item) =>
+                !isPositiveNumber(item.quantity, 1) ||
+                !isPositiveNumber(item.unit_price, 1) ||
+                !isPositiveNumber(item.custom_length_cm) ||
+                !isPositiveNumber(item.caliber_microns, 1) ||
+                !isPositiveNumber(item.weight_grams, 1)
+        );
+        if (invalidItem) {
+            toast.error('Completa todas las medidas con valores mayores a 0');
+            return;
+        }
+
         try {
             setSaving(true);
             const { data: userData } = await supabase.auth.getUser();
             if (!userData.user) throw new Error('No hay sesión activa');
 
             const totalAmount = items.reduce(
-                (sum, item) => sum + item.quantity * item.unit_price,
+                (sum, item) => sum + toNumber(item.quantity) * toNumber(item.unit_price),
                 0
             );
 
@@ -205,17 +252,21 @@ export default function OrdersPanel() {
             }
 
             if (productId) {
-                const orderItemsToInsert = items.map((item) => ({
-                    order_id: orderData.id,
-                    product_id: productId!,
-                    quantity: item.quantity,
-                    custom_length_cm: item.custom_length_cm,
-                    custom_caliber_microns: item.caliber_microns,
-                    weight_grams: item.weight_grams,
-                    unit_price: item.unit_price,
-                    subtotal: item.quantity * item.unit_price,
-                    notes: item.notes,
-                }));
+                const orderItemsToInsert = items.map((item) => {
+                    const quantity = toNumber(item.quantity);
+                    const unitPrice = toNumber(item.unit_price);
+                    return {
+                        order_id: orderData.id,
+                        product_id: productId!,
+                        quantity,
+                        custom_length_cm: toNumber(item.custom_length_cm),
+                        custom_caliber_microns: toNumber(item.caliber_microns),
+                        weight_grams: toNumber(item.weight_grams),
+                        unit_price: unitPrice,
+                        subtotal: quantity * unitPrice,
+                        notes: item.notes,
+                    };
+                });
 
                 await supabase.from('order_items').insert(orderItemsToInsert);
             }
@@ -600,13 +651,11 @@ export default function OrdersPanel() {
                                                     </label>
                                                     <input
                                                         type="number"
+                                                        required
                                                         min="1"
+                                                        step="1"
                                                         value={item.quantity}
-                                                        onChange={(e) => {
-                                                            const updated = [...items];
-                                                            updated[idx].quantity = Number(e.target.value);
-                                                            setItems(updated);
-                                                        }}
+                                                        onChange={(e) => updateItemNumber(idx, 'quantity', e.target.value)}
                                                         className="w-full rounded border border-[#C8CDC9] px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
                                                     />
                                                 </div>
@@ -616,12 +665,11 @@ export default function OrdersPanel() {
                                                     </label>
                                                     <input
                                                         type="number"
+                                                        required
+                                                        min="1"
+                                                        step="1"
                                                         value={item.unit_price}
-                                                        onChange={(e) => {
-                                                            const updated = [...items];
-                                                            updated[idx].unit_price = Number(e.target.value);
-                                                            setItems(updated);
-                                                        }}
+                                                        onChange={(e) => updateItemNumber(idx, 'unit_price', e.target.value)}
                                                         className="w-full rounded border border-[#C8CDC9] px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
                                                     />
                                                 </div>
@@ -647,14 +695,12 @@ export default function OrdersPanel() {
                                                     </label>
                                                     <input
                                                         type="number"
+                                                        required
+                                                        min="0.5"
                                                         step="0.5"
                                                         value={item.custom_length_cm}
-                                                        onChange={(e) => {
-                                                            const updated = [...items];
-                                                            updated[idx].custom_length_cm = Number(e.target.value);
-                                                            setItems(updated);
-                                                        }}
-                                                        placeholder='Ej: 45"'
+                                                        onChange={(e) => updateItemNumber(idx, 'custom_length_cm', e.target.value)}
+                                                        placeholder='Ej: 45 cm'
                                                         className="w-full rounded border border-[#C8CDC9] px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
                                                     />
                                                 </div>
@@ -664,12 +710,11 @@ export default function OrdersPanel() {
                                                     </label>
                                                     <input
                                                         type="number"
+                                                        required
+                                                        min="1"
+                                                        step="1"
                                                         value={item.caliber_microns}
-                                                        onChange={(e) => {
-                                                            const updated = [...items];
-                                                            updated[idx].caliber_microns = Number(e.target.value);
-                                                            setItems(updated);
-                                                        }}
+                                                        onChange={(e) => updateItemNumber(idx, 'caliber_microns', e.target.value)}
                                                         placeholder="Ej: 20µ"
                                                         className="w-full rounded border border-[#C8CDC9] px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
                                                     />
@@ -680,13 +725,11 @@ export default function OrdersPanel() {
                                                     </label>
                                                     <input
                                                         type="number"
-                                                        value={item.weight_grams}
-                                                        onChange={(e) => {
-                                                            const updated = [...items];
-                                                            updated[idx].weight_grams = Number(e.target.value);
-                                                            setItems(updated);
-                                                        }}
                                                         required
+                                                        min="1"
+                                                        step="1"
+                                                        value={item.weight_grams}
+                                                        onChange={(e) => updateItemNumber(idx, 'weight_grams', e.target.value)}
                                                         placeholder="Ej: 300m"
                                                         className="w-full rounded border border-[#C8CDC9] px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
                                                     />
