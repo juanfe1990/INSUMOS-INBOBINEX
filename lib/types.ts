@@ -78,9 +78,9 @@ export type OrderItem = {
     product_id: string;
     quantity: number;
     completed_quantity: number;
-    custom_width_inches?: number | null;
-    custom_length_meters?: number | null;
+    custom_length_cm?: number | null;
     custom_caliber_microns?: number | null;
+    weight_grams?: number | null;
     unit_price: number;
     subtotal: number;
     notes?: string | null;
@@ -125,4 +125,59 @@ export type ProductionLog = {
     notes?: string | null;
     created_at: string;
 };
+
+// --- MÓDULO DE INVENTARIO Y COSTOS ---
+export type InventoryMovementType =
+    | 'entrada_compra'
+    | 'produccion_core'
+    | 'consumo_pedido'
+    | 'merma_desperdicio'
+    | 'ajuste_manual';
+
+export type RawMaterial = {
+    id: string;
+    name: string;
+    material_type: string;
+    color: string;
+    width_cm: number;
+    current_stock_kg: number;
+    cost_per_kg: number;
+    min_stock_alert_kg: number;
+    created_at: string;
+    updated_at: string;
+};
+
+export type CoreSpecification = {
+    id: string;
+    name: string;
+    length_cm: number;
+    standard_cost: number;
+    current_stock_units: number;
+    min_stock_alert_units: number;
+    created_at: string;
+    updated_at: string;
+};
+
+export type InventoryTransaction = {
+    id: string;
+    movement_type: InventoryMovementType;
+    raw_material_id?: string | null;
+    core_id?: string | null;
+    quantity: number;
+    unit_cost: number;
+    total_cost: number;
+    order_id?: string | null;
+    notes?: string | null;
+    created_by: string;
+    created_at: string;
+    raw_material?: RawMaterial | null;
+    core?: CoreSpecification | null;
+    order?: Order | null;
+    creator?: {
+        id: string;
+        full_name: string;
+        email: string;
+    } | null;
+};
+
 

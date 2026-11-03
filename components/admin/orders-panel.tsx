@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import type { Order, OrderPriority, OrderStatus, Client } from '@/lib/types';
+import type { Order, OrderPriority, OrderStatus, Client, CoreSpecification } from '@/lib/types';
 import {
     Clock,
     AlertCircle,
@@ -78,37 +78,37 @@ export default function OrdersPanel() {
     const [deliveryAddress, setDeliveryAddress] = useState('');
     const [notes, setNotes] = useState('');
 
-    // Bobinas del pedido
-    const [items, setItems] = useState<OrderItemDraft[]>([
-        {
-            notes: "Stretch Transparente",
-            quantity: 10,
-            custom_length_cm: 15,
-            caliber_microns: 17,
-            weight_grams: 300,
-            unit_price: 25000,
-        },
-    ]);
+    const [cores, setCores] = useState<CoreSpecification[]>([]);
 
-    const updateItemNumber = (idx: number, field: keyof Omit<OrderItemDraft, 'notes'>, raw: string) => {
-        setItems((prev) => {
-            const updated = [...prev];
-            updated[idx] = { ...updated[idx], [field]: parseNumericDraft(raw) };
-            return updated;
-        });
+    // Medida única del pedido a fabricar
+    const [item, setItem] = useState<OrderItemDraft>({
+        notes: "Vinipel Stretch Transparente",
+        quantity: 10,
+        custom_length_cm: 50,
+        caliber_microns: 17,
+        weight_grams: 1500,
+        unit_price: 25000,
+    });
+
+    const updateItemField = (field: keyof Omit<OrderItemDraft, 'notes'>, raw: string) => {
+        setItem((prev) => ({
+            ...prev,
+            [field]: parseNumericDraft(raw),
+        }));
     };
 
     // Cargar datos iniciales
     const fetchData = async () => {
         try {
             setLoading(true);
-            const [ordersRes, clientsRes] = await Promise.all([
+            const [ordersRes, clientsRes, coresRes] = await Promise.all([
                 supabase
                     .from('orders')
                     .select('*, client:clients(*), items:order_items(*)')
                     .order('priority', { ascending: false })
                     .order('delivery_date', { ascending: true }),
                 supabase.from('clients').select('*').order('business_name'),
+                supabase.from('core_specifications').select('*').order('length_cm', { ascending: true }),
             ]);
 
             if (ordersRes.data) {
@@ -116,6 +116,14 @@ export default function OrdersPanel() {
             }
             if (clientsRes.data) {
                 setClients(clientsRes.data as Client[]);
+            }
+            if (coresRes.data && coresRes.data.length > 0) {
+                const fetchedCores = coresRes.data as CoreSpecification[];
+                setCores(fetchedCores);
+                setItem((prev) => ({
+                    ...prev,
+                    custom_length_cm: prev.custom_length_cm || fetchedCores[0].length_cm,
+                }));
             }
         } catch (err: any) {
             toast.error('Error cargando pedidos: ' + (err.message || 'Error'));
@@ -127,12 +135,19 @@ export default function OrdersPanel() {
     useEffect(() => {
         fetchData();
 
-        // Suscripción Realtime a la tabla orders
+        // Suscripción Realtime a la tabla orders y core_specifications
         const channel = supabase
             .channel('realtime-orders-admin')
             .on(
                 'postgres_changes',
                 { event: '*', schema: 'public', table: 'orders' },
+                () => {
+                    fetchData();
+                }
+            )
+            .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'core_specifications' },
                 () => {
                     fetchData();
                 }
@@ -153,27 +168,7 @@ export default function OrdersPanel() {
         }
     };
 
-    // Agregar fila de bobina
-    const addItemRow = () => {
-        setItems([
-            ...items,
-            {
-                notes: 'Stretch Transparente',
-                quantity: items[0].quantity,
-                custom_length_cm: items[0].custom_length_cm,
-                caliber_microns: items[0].caliber_microns,
-                weight_grams: items[0].weight_grams,
-                unit_price: items[0].unit_price,
-            },
-        ]);
-    };
-
-    const removeItemRow = (idx: number) => {
-        if (items.length <= 1) return;
-        setItems(items.filter((_, i) => i !== idx));
-    };
-
-    // Enviar formulario de creación de pedido
+    // Enviar formulario de creación de pedido (Medida única)
     const handleCreateOrder = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!selectedClientId) {
@@ -181,16 +176,29 @@ export default function OrdersPanel() {
             return;
         }
 
-        const invalidItem = items.find(
-            (item) =>
-                !isPositiveNumber(item.quantity, 1) ||
-                !isPositiveNumber(item.unit_price, 1) ||
-                !isPositiveNumber(item.custom_length_cm) ||
-                !isPositiveNumber(item.caliber_microns, 1) ||
-                !isPositiveNumber(item.weight_grams, 1)
-        );
-        if (invalidItem) {
-            toast.error('Completa todas las medidas con valores mayores a 0');
+        const quantity = toNumber(item.quantity);
+        const unitPrice = toNumber(item.unit_price);
+        const customLengthCm = toNumber(item.custom_length_cm);
+        const caliberMicrons = toNumber(item.caliber_microns);
+        const weightGrams = toNumber(item.weight_grams);
+
+        if (
+            !isPositiveNumber(item.quantity, 1) ||
+            !isPositiveNumber(item.unit_price, 1) ||
+            !isPositiveNumber(item.custom_length_cm, 1) ||
+            !isPositiveNumber(item.caliber_microns, 1) ||
+            !isPositiveNumber(item.weight_grams, 1)
+        ) {
+            toast.error('Completa todos los campos con valores mayores a 0');
+            return;
+        }
+
+        // CONDICIONAL: Validación estricta de stock de cores disponibles
+        const selectedCore = cores.find((c) => c.length_cm === customLengthCm);
+        if (selectedCore && quantity > selectedCore.current_stock_units) {
+            toast.error(
+                `No se puede crear el pedido: No hay suficientes cores de ${selectedCore.length_cm} cm en inventario. Disponibles: ${selectedCore.current_stock_units}, solicitados: ${quantity}. No se puede consumir más de lo disponible.`
+            );
             return;
         }
 
@@ -199,10 +207,7 @@ export default function OrdersPanel() {
             const { data: userData } = await supabase.auth.getUser();
             if (!userData.user) throw new Error('No hay sesión activa');
 
-            const totalAmount = items.reduce(
-                (sum, item) => sum + toNumber(item.quantity) * toNumber(item.unit_price),
-                0
-            );
+            const totalAmount = quantity * unitPrice;
 
             // 1. Insertar Cabecera de Orden
             const { data: orderData, error: orderError } = await supabase
@@ -224,8 +229,7 @@ export default function OrdersPanel() {
 
             if (orderError || !orderData) throw orderError || new Error('Error creando orden');
 
-            // 2. Insertar Items (Bobinas)
-            // Primero aseguramos un producto de catálogo genérico si no hay uno
+            // 2. Insertar Item único (Medida fija)
             let productId: string | null = null;
             const { data: existingProd } = await supabase
                 .from('products')
@@ -236,7 +240,7 @@ export default function OrdersPanel() {
             if (existingProd) {
                 productId = existingProd.id;
             } else {
-                // Crear un producto base de vinipel
+                // Crear un producto base de vinipel si no existe
                 const { data: newProd } = await supabase
                     .from('products')
                     .insert([
@@ -252,23 +256,19 @@ export default function OrdersPanel() {
             }
 
             if (productId) {
-                const orderItemsToInsert = items.map((item) => {
-                    const quantity = toNumber(item.quantity);
-                    const unitPrice = toNumber(item.unit_price);
-                    return {
-                        order_id: orderData.id,
-                        product_id: productId!,
-                        quantity,
-                        custom_length_cm: toNumber(item.custom_length_cm),
-                        custom_caliber_microns: toNumber(item.caliber_microns),
-                        weight_grams: toNumber(item.weight_grams),
-                        unit_price: unitPrice,
-                        subtotal: quantity * unitPrice,
-                        notes: item.notes,
-                    };
-                });
+                const orderItemToInsert = {
+                    order_id: orderData.id,
+                    product_id: productId!,
+                    quantity,
+                    custom_length_cm: customLengthCm,
+                    custom_caliber_microns: caliberMicrons,
+                    weight_grams: weightGrams,
+                    unit_price: unitPrice,
+                    subtotal: totalAmount,
+                    notes: item.notes,
+                };
 
-                await supabase.from('order_items').insert(orderItemsToInsert);
+                await supabase.from('order_items').insert([orderItemToInsert]);
             }
 
             toast.success(`Pedido #${orderData.order_number} registrado y enviado a planta`);
@@ -281,6 +281,8 @@ export default function OrdersPanel() {
             setSaving(false);
         }
     };
+
+
 
     // Cambiar estado rápido
     const handleStatusChange = async (orderId: string, newStatus: OrderStatus) => {
@@ -308,6 +310,11 @@ export default function OrdersPanel() {
         if (filterStatus === 'all') return true;
         return o.status === filterStatus;
     });
+
+    const selectedCoreForForm = cores.find((c) => c.length_cm === toNumber(item.custom_length_cm));
+    const isStockSufficient = selectedCoreForForm
+        ? toNumber(item.quantity) <= selectedCoreForForm.current_stock_units
+        : true;
 
     return (
         <div className="space-y-6">
@@ -604,141 +611,157 @@ export default function OrdersPanel() {
                                 </div>
                             </div>
 
-                            {/* Detalle de Bobinas a Fabricar */}
-                            <div className="rounded-lg border border-[#C8CDC9] bg-slate-50/50 p-3">
-                                <div className="mb-2 flex items-center justify-between">
-                                    <label className="text-xs font-bold text-[#2E4040]">
-                                        Rollos Requeridos
-                                    </label>
-                                    <button
-                                        type="button"
-                                        onClick={addItemRow}
-                                        className="text-xs font-semibold text-[#3F8346] hover:underline"
-                                    >
-                                        + Agregar otra medida
-                                    </button>
-                                </div>
-
-                                <div className="space-y-3">
-
-                                    {items.map((item, idx) => (
+                            {/* Detalle del Rollo a Fabricar (Medida Única) */}
+                            <div className="rounded-lg border border-[#C8CDC9] bg-slate-50/50 p-3.5 space-y-3">
+                                <div className="flex items-center justify-between border-b border-[#C8CDC9]/60 pb-2">
+                                    <div>
+                                        <label className="text-xs font-bold text-[#2E4040]">
+                                            Especificación del Rollo a Fabricar
+                                        </label>
+                                        <p className="text-[11px] text-[#949E97]">
+                                            Cada orden se registra con una medida técnica para planta
+                                        </p>
+                                    </div>
+                                    {selectedCoreForForm && (
                                         <div
-                                            key={idx}
-                                            className="rounded-lg border border-[#C8CDC9] bg-white p-3 shadow-sm space-y-2"
+                                            className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                                                isStockSufficient
+                                                    ? 'bg-emerald-100 text-emerald-800'
+                                                    : 'bg-red-100 text-red-700 animate-pulse'
+                                            }`}
                                         >
-                                            {/* Fila 1: Tipo y cantidad */}
-                                            <div className="grid grid-cols-12 items-end gap-2">
-                                                <div className="col-span-5">
-                                                    <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                        Tipo de Stretch
-                                                    </label>
-                                                    <select
-                                                        value={item.notes}
-                                                        onChange={(e) => {
-                                                            const updated = [...items];
-                                                            updated[idx].notes = e.target.value;
-                                                            setItems(updated);
-                                                        }}
-                                                        className="w-full rounded border border-[#C8CDC9] bg-white px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
-                                                    >
-                                                        <option value="Vinipel Stretch Transparente">Stretch Transparente</option>
-                                                        <option value="Vinipel Stretch Negro">Stretch Negro</option>
-                                                    </select>
-                                                </div>
-                                                <div className="col-span-3">
-                                                    <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                        Cantidad (rollos)
-                                                    </label>
-                                                    <input
-                                                        type="number"
-                                                        required
-                                                        min="1"
-                                                        step="1"
-                                                        value={item.quantity}
-                                                        onChange={(e) => updateItemNumber(idx, 'quantity', e.target.value)}
-                                                        className="w-full rounded border border-[#C8CDC9] px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
-                                                    />
-                                                </div>
-                                                <div className="col-span-3">
-                                                    <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                        Precio Unit. ($)
-                                                    </label>
-                                                    <input
-                                                        type="number"
-                                                        required
-                                                        min="1"
-                                                        step="1"
-                                                        value={item.unit_price}
-                                                        onChange={(e) => updateItemNumber(idx, 'unit_price', e.target.value)}
-                                                        className="w-full rounded border border-[#C8CDC9] px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
-                                                    />
-                                                </div>
-                                                <div className="col-span-1 flex items-end justify-center pb-1">
-                                                    {items.length > 1 && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => removeItemRow(idx)}
-                                                            className="text-red-400 hover:text-red-600 text-base leading-none"
-                                                            title="Eliminar fila"
-                                                        >
-                                                            ✕
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            </div>
-
-                                            {/* Fila 2: Dimensiones */}
-                                            <div className="grid grid-cols-3 gap-2">
-                                                <div>
-                                                    <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                        Largo (centímetros)
-                                                    </label>
-                                                    <input
-                                                        type="number"
-                                                        required
-                                                        min="0.5"
-                                                        step="0.5"
-                                                        value={item.custom_length_cm}
-                                                        onChange={(e) => updateItemNumber(idx, 'custom_length_cm', e.target.value)}
-                                                        placeholder='Ej: 45 cm'
-                                                        className="w-full rounded border border-[#C8CDC9] px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                        Calibre (micras)
-                                                    </label>
-                                                    <input
-                                                        type="number"
-                                                        required
-                                                        min="1"
-                                                        step="1"
-                                                        value={item.caliber_microns}
-                                                        onChange={(e) => updateItemNumber(idx, 'caliber_microns', e.target.value)}
-                                                        placeholder="Ej: 20µ"
-                                                        className="w-full rounded border border-[#C8CDC9] px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                        Peso (gramos)
-                                                    </label>
-                                                    <input
-                                                        type="number"
-                                                        required
-                                                        min="1"
-                                                        step="1"
-                                                        value={item.weight_grams}
-                                                        onChange={(e) => updateItemNumber(idx, 'weight_grams', e.target.value)}
-                                                        placeholder="Ej: 300m"
-                                                        className="w-full rounded border border-[#C8CDC9] px-2 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
-                                                    />
-                                                </div>
-                                            </div>
+                                            Stock de Cores: {selectedCoreForForm.current_stock_units} disponibles
                                         </div>
-                                    ))}
+                                    )}
                                 </div>
-                                <div className="mt-8">
+
+                                <div className="rounded-lg border border-[#C8CDC9] bg-white p-3 shadow-sm space-y-3">
+                                    {/* Fila 1: Tipo y cantidad y precio */}
+                                    <div className="grid grid-cols-12 items-end gap-2.5">
+                                        <div className="col-span-12 sm:col-span-5">
+                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
+                                                Tipo de Stretch *
+                                            </label>
+                                            <select
+                                                value={item.notes}
+                                                onChange={(e) => setItem({ ...item, notes: e.target.value })}
+                                                className="w-full rounded border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
+                                            >
+                                                <option value="Vinipel Stretch Transparente">Stretch Transparente</option>
+                                                <option value="Vinipel Stretch Negro">Stretch Negro</option>
+                                                <option value="Vinipel Stretch Azul">Stretch Azul</option>
+                                            </select>
+                                        </div>
+                                        <div className="col-span-6 sm:col-span-3">
+                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
+                                                Cantidad (rollos) *
+                                            </label>
+                                            <input
+                                                type="number"
+                                                required
+                                                min="1"
+                                                step="1"
+                                                value={item.quantity}
+                                                onChange={(e) => updateItemField('quantity', e.target.value)}
+                                                className={`w-full rounded border px-2.5 py-1.5 text-xs focus:outline-none ${
+                                                    !isStockSufficient && toNumber(item.quantity) > 0
+                                                        ? 'border-red-500 bg-red-50/50 text-red-900 font-bold'
+                                                        : 'border-[#C8CDC9] focus:border-[#3F8346]'
+                                                }`}
+                                            />
+                                        </div>
+                                        <div className="col-span-6 sm:col-span-4">
+                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
+                                                Precio Unit. ($) *
+                                            </label>
+                                            <input
+                                                type="number"
+                                                required
+                                                min="1"
+                                                step="1"
+                                                value={item.unit_price}
+                                                onChange={(e) => updateItemField('unit_price', e.target.value)}
+                                                className="w-full rounded border border-[#C8CDC9] px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Fila 2: Ancho (Desplegable BD de cores), Calibre y Peso */}
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                                        <div>
+                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
+                                                Ancho / Medida (cm) *
+                                            </label>
+                                            <select
+                                                required
+                                                value={item.custom_length_cm}
+                                                onChange={(e) => updateItemField('custom_length_cm', e.target.value)}
+                                                className="w-full rounded border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                            >
+                                                <option value="">Selecciona una medida</option>
+                                                {cores.map((c) => (
+                                                    <option key={c.id} value={c.length_cm}>
+                                                        {c.length_cm} cm — {c.name} ({c.current_stock_units} cores)
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
+                                                Calibre (micras) *
+                                            </label>
+                                            <input
+                                                type="number"
+                                                required
+                                                min="1"
+                                                step="1"
+                                                value={item.caliber_microns}
+                                                onChange={(e) => updateItemField('caliber_microns', e.target.value)}
+                                                placeholder="Ej: 17µ"
+                                                className="w-full rounded border border-[#C8CDC9] px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
+                                                Peso (gramos) *
+                                            </label>
+                                            <input
+                                                type="number"
+                                                required
+                                                min="1"
+                                                step="1"
+                                                value={item.weight_grams}
+                                                onChange={(e) => updateItemField('weight_grams', e.target.value)}
+                                                placeholder="Ej: 1500g"
+                                                className="w-full rounded border border-[#C8CDC9] px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Alerta / Feedback de Cores e Inventario */}
+                                    {selectedCoreForForm && (
+                                        <div className="pt-1">
+                                            {!isStockSufficient ? (
+                                                <div className="flex items-center gap-1.5 rounded-md bg-red-50 p-2 text-[11px] font-semibold text-red-700 border border-red-200">
+                                                    <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                                                    <span>
+                                                        ⚠️ No hay suficientes cores: solicitas {toNumber(item.quantity)} unidades y solo hay {selectedCoreForForm.current_stock_units} cores de {selectedCoreForForm.length_cm} cm en inventario.
+                                                    </span>
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center gap-1.5 text-[11px] text-[#3F8346]">
+                                                    <CheckCircle2 className="h-3.5 w-3.5 text-[#3F8346]" />
+                                                    <span>
+                                                        Cores suficientes disponibles en planta ({selectedCoreForForm.current_stock_units} unidades).
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="mt-4">
                                     <label className="block text-xs font-semibold text-[#2E4040]">
                                         Notas / Observaciones del Pedido
                                     </label>
@@ -750,7 +773,6 @@ export default function OrdersPanel() {
                                         className="mt-1 w-full rounded-md border border-[#C8CDC9] px-3 py-2 text-sm focus:border-[#3F8346] focus:outline-none"
                                     />
                                 </div>
-                            </div>
 
                             {/* Botones de acción */}
                             <div className="flex items-center justify-end gap-3 border-t border-[#C8CDC9] pt-3">
@@ -763,11 +785,11 @@ export default function OrdersPanel() {
                                 </button>
                                 <button
                                     type="submit"
-                                    disabled={saving}
-                                    className="flex items-center gap-2 rounded-md bg-[#3F8346] px-5 py-2 text-xs font-semibold text-white hover:bg-[#2d6332] disabled:opacity-50"
+                                    disabled={saving || !isStockSufficient}
+                                    className="flex items-center gap-2 rounded-md bg-[#3F8346] px-5 py-2 text-xs font-semibold text-white hover:bg-[#2d6332] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                                    Crear Pedido y Enviar a Planta
+                                    {!isStockSufficient ? 'Sin Cores Suficientes' : 'Crear Pedido y Enviar a Planta'}
                                 </button>
                             </div>
                         </form>

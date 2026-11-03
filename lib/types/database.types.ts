@@ -324,6 +324,120 @@ export interface Database {
         };
         Relationships: [];
       };
+      raw_materials: {
+        Row: {
+          id: string;
+          name: string;
+          material_type: string;
+          color: string;
+          width_cm: number;
+          current_stock_kg: number;
+          cost_per_kg: number;
+          min_stock_alert_kg: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          material_type?: string;
+          color?: string;
+          width_cm: number;
+          current_stock_kg?: number;
+          cost_per_kg?: number;
+          min_stock_alert_kg?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          material_type?: string;
+          color?: string;
+          width_cm?: number;
+          current_stock_kg?: number;
+          cost_per_kg?: number;
+          min_stock_alert_kg?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      core_specifications: {
+        Row: {
+          id: string;
+          name: string;
+          length_cm: number;
+          standard_cost: number;
+          current_stock_units: number;
+          min_stock_alert_units: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          length_cm: number;
+          standard_cost?: number;
+          current_stock_units?: number;
+          min_stock_alert_units?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          length_cm?: number;
+          standard_cost?: number;
+          current_stock_units?: number;
+          min_stock_alert_units?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      inventory_transactions: {
+        Row: {
+          id: string;
+          movement_type: 'entrada_compra' | 'produccion_core' | 'consumo_pedido' | 'merma_desperdicio' | 'ajuste_manual';
+          raw_material_id: string | null;
+          core_id: string | null;
+          quantity: number;
+          unit_cost: number;
+          total_cost: number;
+          order_id: string | null;
+          notes: string | null;
+          created_by: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          movement_type: 'entrada_compra' | 'produccion_core' | 'consumo_pedido' | 'merma_desperdicio' | 'ajuste_manual';
+          raw_material_id?: string | null;
+          core_id?: string | null;
+          quantity: number;
+          unit_cost?: number;
+          total_cost?: number;
+          order_id?: string | null;
+          notes?: string | null;
+          created_by: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          movement_type?: 'entrada_compra' | 'produccion_core' | 'consumo_pedido' | 'merma_desperdicio' | 'ajuste_manual';
+          raw_material_id?: string | null;
+          core_id?: string | null;
+          quantity?: number;
+          unit_cost?: number;
+          total_cost?: number;
+          order_id?: string | null;
+          notes?: string | null;
+          created_by?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: {
       [_ in never]: never;
@@ -336,6 +450,12 @@ export interface Database {
       order_priority: OrderPriority;
       order_status: OrderStatus;
       film_type: FilmType;
+      inventory_movement_type:
+        | 'entrada_compra'
+        | 'produccion_core'
+        | 'consumo_pedido'
+        | 'merma_desperdicio'
+        | 'ajuste_manual';
     };
     CompositeTypes: {
       [_ in never]: never;

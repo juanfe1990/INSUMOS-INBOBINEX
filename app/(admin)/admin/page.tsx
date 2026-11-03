@@ -3,6 +3,7 @@
 import type { Category, Product } from '@/lib/types';
 import OrdersPanel from '@/components/admin/orders-panel';
 import ClientsPanel from '@/components/admin/clients-panel';
+import InventoryPanel from '@/components/admin/inventory-panel';
 import {
     ClipboardList,
     Image as ImageIcon,
@@ -14,6 +15,7 @@ import {
     Trash2,
     Upload,
     Users,
+    Layers,
     X,
 } from 'lucide-react';
 import Image from 'next/image';
@@ -40,7 +42,7 @@ const emptyProductForm: ProductFormState = {
 
 export default function AdminPage() {
     // --- Pestaña Activa ---
-    const [activeTab, setActiveTab] = useState<'orders' | 'clients' | 'catalog'>('orders');
+    const [activeTab, setActiveTab] = useState<'orders' | 'clients' | 'inventory' | 'catalog'>('orders');
 
     // --- Estados Generales Catálogo Web (Firebase) ---
     const [products, setProducts] = useState<Product[]>([]);
@@ -326,6 +328,17 @@ export default function AdminPage() {
                     Clientes (CRM)
                 </button>
                 <button
+                    onClick={() => setActiveTab('inventory')}
+                    className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
+                        activeTab === 'inventory'
+                            ? 'bg-[#2E4040] text-[#FDFDFD] shadow-sm'
+                            : 'border border-[#C8CDC9] bg-white text-[#2E4040] hover:bg-[#C8CDC9]/20'
+                    }`}
+                >
+                    <Layers className="h-4 w-4 text-[#3F8346]" />
+                    Inventarios & Kardex
+                </button>
+                <button
                     onClick={() => setActiveTab('catalog')}
                     className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
                         activeTab === 'catalog'
@@ -341,6 +354,7 @@ export default function AdminPage() {
             {/* --- VISTAS CRM SUPABASE --- */}
             {activeTab === 'orders' && <OrdersPanel />}
             {activeTab === 'clients' && <ClientsPanel />}
+            {activeTab === 'inventory' && <InventoryPanel />}
 
             {/* --- VISTA CATÁLOGO WEB (FIREBASE) --- */}
             {activeTab === 'catalog' && (
