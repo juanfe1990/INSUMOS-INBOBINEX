@@ -4,8 +4,14 @@ import type { Category, Product } from '@/lib/types';
 import OrdersPanel from '@/components/admin/orders-panel';
 import ClientsPanel from '@/components/admin/clients-panel';
 import InventoryPanel from '@/components/admin/inventory-panel';
+import SuppliersPanel from '@/components/admin/suppliers/suppliers-panel';
+import ReceivablesPanel from '@/components/admin/receivables/receivables-panel';
+import AdminSidebar, { type AdminTab } from '@/components/admin/admin-sidebar';
+import ExpensesPanel from '@/components/admin/expenses/expenses-panel';
+import TreasuryPanel from '@/components/admin/treasury/treasury-panel';
+import FinancePanel from '@/components/admin/finance/finance-panel';
+import { useConfirm } from '@/components/admin/confirm-dialog';
 import {
-    ClipboardList,
     Image as ImageIcon,
     Loader2,
     Package,
@@ -14,8 +20,6 @@ import {
     Tags,
     Trash2,
     Upload,
-    Users,
-    Layers,
     X,
 } from 'lucide-react';
 import Image from 'next/image';
@@ -42,7 +46,7 @@ const emptyProductForm: ProductFormState = {
 
 export default function AdminPage() {
     // --- Pestaña Activa ---
-    const [activeTab, setActiveTab] = useState<'orders' | 'clients' | 'inventory' | 'catalog'>('orders');
+    const [activeTab, setActiveTab] = useState<AdminTab>('orders');
 
     // --- Estados Generales Catálogo Web (Firebase) ---
     const [products, setProducts] = useState<Product[]>([]);
@@ -63,31 +67,49 @@ export default function AdminPage() {
     const [savingCategory, setSavingCategory] = useState(false);
     const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
     const [categoryForm, setCategoryForm] = useState({ name: '', description: '' });
+    const [seedingCategories, setSeedingCategories] = useState(false);
+
+    const [confirmDialog, confirm] = useConfirm();
 
     // --- Fetch de Datos ---
     const fetchCategories = async () => {
-        const toastId = toast.loading('Actualizando categorías...');
         try {
             const res = await fetch('/api/categories');
-            const data = await res.json();
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
             if (Array.isArray(data)) setCategories(data);
-            toast.success('Categorías actualizadas', { id: toastId });
         } catch (error) {
-            toast.error('Error al cargar categorías', { id: toastId });
+            const message = error instanceof Error ? error.message : 'Error al cargar categorías';
+            toast.error(`No se pudieron cargar las categorías: ${message}`);
+        }
+    };
+
+    const handleSeedCategories = async () => {
+        setSeedingCategories(true);
+        try {
+            const res = await fetch('/api/categories', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ seed: true }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+            toast.success('Categorías predeterminadas cargadas');
+            fetchCategories();
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'No se pudieron cargar las categorías');
+        } finally {
+            setSeedingCategories(false);
         }
     };
 
     const fetchData = async () => {
         setLoading(true);
         try {
-            const [prodRes, catRes] = await Promise.all([
-                fetch('/api/products'),
-                fetch('/api/categories'),
-            ]);
-            const prodData = await prodRes.json();
-            const catData = await catRes.json();
+            const prodRes = await fetch('/api/products');
+            const prodData = await prodRes.json().catch(() => []);
             if (Array.isArray(prodData)) setProducts(prodData);
-            if (Array.isArray(catData)) setCategories(catData);
+            await fetchCategories();
         } catch (error) {
             toast.error('Error al cargar los datos');
         } finally {
@@ -164,20 +186,26 @@ export default function AdminPage() {
     };
 
     const handleDeleteCategory = async (id: string, name: string) => {
-        if (
-            !confirm(
-                `¿Eliminar la categoría "${name}"? Los productos pasarán a estar "Sin categoría".`,
-            )
-        )
-            return;
+        const ok = await confirm({
+            title: `¿Eliminar la categoría "${name}"?`,
+            description: 'Los productos asociados quedarán "Sin categoría". Esta acción no se puede deshacer.',
+            confirmLabel: 'Eliminar',
+        });
+        if (!ok) return;
 
         const toastId = toast.loading(`Eliminando categoría "${name}"...`);
         try {
             const res = await fetch(`/api/categories/${id}`, { method: 'DELETE' });
-            if (!res.ok) throw new Error('Error al eliminar');
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
 
             toast.success('Categoría eliminada con éxito', { id: toastId });
-            fetchData();
+            setCategories((prev) => prev.filter((c) => c.id !== id));
+            if (editingCategoryId === id) {
+                setEditingCategoryId(null);
+                setCategoryForm({ name: '', description: '' });
+            }
+            if (filterCategory === id) setFilterCategory('all');
         } catch (err) {
             const message = err instanceof Error ? err.message : 'Error al eliminar la categoría';
             toast.error(message, { id: toastId });
@@ -281,7 +309,12 @@ export default function AdminPage() {
     };
 
     const handleDeleteProduct = async (id: string, name: string) => {
-        if (!confirm(`¿Eliminar "${name}"? Esta acción no se puede deshacer.`)) return;
+        const ok = await confirm({
+            title: `¿Eliminar el producto "${name}"?`,
+            description: 'Esta acción no se puede deshacer.',
+            confirmLabel: 'Eliminar',
+        });
+        if (!ok) return;
 
         const toastId = toast.loading(`Eliminando producto "${name}"...`);
         try {
@@ -302,59 +335,21 @@ export default function AdminPage() {
     const sortedAndFiltered = [...filtered].sort((a, b) => (a.order || 0) - (b.order || 0));
 
     return (
-        <div>
-            {/* --- NAVEGACIÓN SUPERIOR DE MÓDULOS --- */}
-            <div className="mb-8 flex flex-wrap items-center gap-3 border-b border-[#C8CDC9] pb-4">
-                <button
-                    onClick={() => setActiveTab('orders')}
-                    className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
-                        activeTab === 'orders'
-                            ? 'bg-[#2E4040] text-[#FDFDFD] shadow-sm'
-                            : 'border border-[#C8CDC9] bg-white text-[#2E4040] hover:bg-[#C8CDC9]/20'
-                    }`}
-                >
-                    <ClipboardList className="h-4 w-4 text-[#3F8346]" />
-                    Pedidos & Planta (CRM)
-                </button>
-                <button
-                    onClick={() => setActiveTab('clients')}
-                    className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
-                        activeTab === 'clients'
-                            ? 'bg-[#2E4040] text-[#FDFDFD] shadow-sm'
-                            : 'border border-[#C8CDC9] bg-white text-[#2E4040] hover:bg-[#C8CDC9]/20'
-                    }`}
-                >
-                    <Users className="h-4 w-4 text-[#3F8346]" />
-                    Clientes (CRM)
-                </button>
-                <button
-                    onClick={() => setActiveTab('inventory')}
-                    className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
-                        activeTab === 'inventory'
-                            ? 'bg-[#2E4040] text-[#FDFDFD] shadow-sm'
-                            : 'border border-[#C8CDC9] bg-white text-[#2E4040] hover:bg-[#C8CDC9]/20'
-                    }`}
-                >
-                    <Layers className="h-4 w-4 text-[#3F8346]" />
-                    Inventarios & Kardex
-                </button>
-                <button
-                    onClick={() => setActiveTab('catalog')}
-                    className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
-                        activeTab === 'catalog'
-                            ? 'bg-[#2E4040] text-[#FDFDFD] shadow-sm'
-                            : 'border border-[#C8CDC9] bg-white text-[#2E4040] hover:bg-[#C8CDC9]/20'
-                    }`}
-                >
-                    <Package className="h-4 w-4 text-[#3F8346]" />
-                    Catálogo Web (Firebase)
-                </button>
-            </div>
-
+        <AdminSidebar
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            categoriesCount={categories.length}
+            onManageCategories={() => setShowCategoryModal(true)}
+        >
             {/* --- VISTAS CRM SUPABASE --- */}
             {activeTab === 'orders' && <OrdersPanel />}
+            {activeTab === 'receivables' && <ReceivablesPanel />}
+            {activeTab === 'expenses' && <ExpensesPanel />}
+            {activeTab === 'treasury' && <TreasuryPanel />}
+            {activeTab === 'finance' && <FinancePanel />}
             {activeTab === 'clients' && <ClientsPanel />}
             {activeTab === 'inventory' && <InventoryPanel />}
+            {activeTab === 'suppliers' && <SuppliersPanel />}
 
             {/* --- VISTA CATÁLOGO WEB (FIREBASE) --- */}
             {activeTab === 'catalog' && (
@@ -505,9 +500,13 @@ export default function AdminPage() {
                     </div>
                 </div>
             )}
+                </div>
+            )}
+
+            {confirmDialog}
 
             {/* ========================================== */}
-            {/* MODAL DE CATEGORÍAS                        */}
+            {/* MODAL DE CATEGORÍAS (accesible desde cualquier pestaña) */}
             {/* ========================================== */}
             {showCategoryModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#2E4040]/60 p-4">
@@ -593,8 +592,17 @@ export default function AdminPage() {
                             </h3>
                             <div className="max-h-60 overflow-y-auto rounded-md border border-[#C8CDC9] divide-y divide-[#C8CDC9]/50">
                                 {categories.length === 0 ? (
-                                    <div className="p-4 text-center text-sm text-[#949E97]">
-                                        No hay categorías.
+                                    <div className="space-y-2 p-4 text-center text-sm text-[#949E97]">
+                                        <p>No hay categorías registradas.</p>
+                                        <button
+                                            type="button"
+                                            onClick={handleSeedCategories}
+                                            disabled={seedingCategories}
+                                            className="inline-flex items-center gap-1.5 rounded-md border border-[#C8CDC9] px-3 py-1.5 text-xs font-semibold text-[#2E4040] hover:bg-[#C8CDC9]/20 disabled:opacity-50"
+                                        >
+                                            {seedingCategories && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                            Cargar categorías predeterminadas
+                                        </button>
                                     </div>
                                 ) : (
                                     categories.map((cat) => (
@@ -612,8 +620,7 @@ export default function AdminPage() {
                                                     </p>
                                                 )}
                                             </div>
-                                            {/* Botones invisibles que aparecen en hover */}
-                                            <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                                            <div className="flex items-center gap-1">
                                                 <button
                                                     onClick={() => openEditCategory(cat)}
                                                     className="rounded-md p-1.5 text-[#949E97] hover:bg-[#3F8346]/10 hover:text-[#3F8346]"
@@ -625,8 +632,8 @@ export default function AdminPage() {
                                                     onClick={() =>
                                                         handleDeleteCategory(cat.id, cat.name)
                                                     }
-                                                    className="rounded-md p-1.5 text-[#949E97] hover:bg-red-50 hover:text-red-600"
-                                                    title="Eliminar"
+                                                    className="rounded-md p-1.5 text-red-500 hover:bg-red-50 hover:text-red-700 transition"
+                                                    title="Eliminar categoría"
                                                 >
                                                     <Trash2 className="h-4 w-4" />
                                                 </button>
@@ -833,8 +840,6 @@ export default function AdminPage() {
                     </div>
                 </div>
             )}
-                </div>
-            )}
-        </div>
+        </AdminSidebar>
     );
 }

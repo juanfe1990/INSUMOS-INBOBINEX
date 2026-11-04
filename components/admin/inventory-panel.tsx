@@ -3,7 +3,16 @@
 import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/auth-context';
-import type { RawMaterial, CoreSpecification, InventoryTransaction, InventoryMovementType } from '@/lib/types';
+import type {
+    RawMaterial,
+    CoreSpecification,
+    CoreMaterial,
+    InventoryCategory,
+    InventoryItem,
+    InventoryTransaction,
+    InventoryMovementType,
+} from '@/lib/types';
+import GeneralInventory from '@/components/admin/inventory/general-inventory';
 import {
     Package,
     Layers,
@@ -23,8 +32,11 @@ import {
     User,
     CheckCircle2,
     X,
+    Trash2,
+    Boxes,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useConfirm } from '@/components/admin/confirm-dialog';
 
 const MOVEMENT_CONFIG: Record<
     InventoryMovementType,
@@ -38,7 +50,7 @@ const MOVEMENT_CONFIG: Record<
         isPositive: true,
     },
     produccion_core: {
-        label: 'Corte de Core',
+        label: 'Armado de Cores',
         bg: 'bg-blue-50 border-blue-200',
         text: 'text-blue-700',
         icon: ArrowUpRight,
@@ -65,19 +77,76 @@ const MOVEMENT_CONFIG: Record<
         icon: SlidersHorizontal,
         isPositive: true,
     },
+    anulacion_compra: {
+        label: 'Anulación Compra',
+        bg: 'bg-red-50 border-red-200',
+        text: 'text-red-700',
+        icon: ArrowDownRight,
+        isPositive: false,
+    },
+    consumo_armado_core: {
+        label: 'Material a Armado',
+        bg: 'bg-sky-50 border-sky-200',
+        text: 'text-sky-700',
+        icon: ArrowDownRight,
+        isPositive: false,
+    },
+    salida_venta: {
+        label: 'Venta / Salida',
+        bg: 'bg-indigo-50 border-indigo-200',
+        text: 'text-indigo-700',
+        icon: ArrowDownRight,
+        isPositive: false,
+    },
+    consumo_interno: {
+        label: 'Consumo Interno',
+        bg: 'bg-orange-50 border-orange-200',
+        text: 'text-orange-700',
+        icon: ArrowDownRight,
+        isPositive: false,
+    },
 };
+
+const fmtKg = (n: number) => n.toLocaleString('es-CO', { maximumFractionDigits: 2 });
+const fmtCOP = (n: number) => '$' + Math.round(n).toLocaleString('es-CO');
+
+/** Cuántos cores de esta medida alcanzan con los kg disponibles del material */
+function coresFromKg(kg: number, core: CoreSpecification): number | null {
+    const w = Number(core.weight_grams || 0);
+    if (w <= 0) return null;
+    return Math.floor((kg * 1000) / w);
+}
+
+/** Costo estimado de armar 1 core: material (kg x costo/kg) + mano de obra */
+function estimateCoreUnitCost(core: CoreSpecification, material: CoreMaterial | null | undefined): number {
+    const materialCost = material ? (Number(core.weight_grams || 0) / 1000) * Number(material.cost_per_kg || 0) : 0;
+    return materialCost + Number(core.labor_cost_per_unit || 0);
+}
+
+const DELETE_NO_PERMISSION =
+    'No se eliminó ningún registro: tu usuario no tiene permiso de borrado (se requiere rol admin y la política DELETE en Supabase).';
+
+function deleteErrorMessage(err: any): string {
+    if (err?.code === '23503') {
+        return 'Tiene movimientos de Kardex asociados y la base de datos no permite desvincularlos. Aplica la migración de FKs (ON DELETE SET NULL).';
+    }
+    return err?.message || 'Error desconocido';
+}
 
 export default function InventoryPanel() {
     const supabase = createClient();
     const { user, profile } = useAuth();
 
     // Pestañas internas
-    const [subTab, setSubTab] = useState<'raw' | 'cores' | 'kardex'>('raw');
+    const [subTab, setSubTab] = useState<'raw' | 'cores' | 'general' | 'kardex'>('raw');
     const [loading, setLoading] = useState(true);
 
     // Datos principales
     const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([]);
     const [cores, setCores] = useState<CoreSpecification[]>([]);
+    const [coreMaterials, setCoreMaterials] = useState<CoreMaterial[]>([]);
+    const [invCategories, setInvCategories] = useState<InventoryCategory[]>([]);
+    const [invItems, setInvItems] = useState<InventoryItem[]>([]);
     const [transactions, setTransactions] = useState<InventoryTransaction[]>([]);
 
     // Filtros Kardex
@@ -95,6 +164,7 @@ export default function InventoryPanel() {
     const [newRawName, setNewRawName] = useState('');
     const [newRawColor, setNewRawColor] = useState('transparente');
     const [newRawWidth, setNewRawWidth] = useState('50');
+    const [newRawCaliber, setNewRawCaliber] = useState('17');
     const [newRawCost, setNewRawCost] = useState('9500');
     const [newRawMinStock, setNewRawMinStock] = useState('100');
 
@@ -103,25 +173,57 @@ export default function InventoryPanel() {
     const [coreEntryUnits, setCoreEntryUnits] = useState<string>('');
     const [coreEntryNotes, setCoreEntryNotes] = useState<string>('');
 
+    // Material de cores (kg)
+    const [materialForm, setMaterialForm] = useState<{
+        id: string | null;
+        name: string;
+        cost: string;
+        minKg: string;
+    } | null>(null);
+    const [adjustMaterial, setAdjustMaterial] = useState<CoreMaterial | null>(null);
+    const [adjustKg, setAdjustKg] = useState('');
+    const [adjustNotes, setAdjustNotes] = useState('');
+
     const [showEditCoreCostModal, setShowEditCoreCostModal] = useState(false);
     const [editingCore, setEditingCore] = useState<CoreSpecification | null>(null);
     const [editCoreCost, setEditCoreCost] = useState<string>('');
+    const [editCoreWeight, setEditCoreWeight] = useState<string>('');
+    const [editCoreLabor, setEditCoreLabor] = useState<string>('');
+    const [editCoreMaterialId, setEditCoreMaterialId] = useState<string>('');
+
+    const [showNewCoreModal, setShowNewCoreModal] = useState(false);
+    const [newCoreName, setNewCoreName] = useState('');
+    const [newCoreLength, setNewCoreLength] = useState('50');
+    const [newCoreWeight, setNewCoreWeight] = useState('');
+    const [newCoreLabor, setNewCoreLabor] = useState('');
+    const [newCoreMaterialId, setNewCoreMaterialId] = useState('');
+    const [newCoreMinStock, setNewCoreMinStock] = useState('30');
 
     const [saving, setSaving] = useState(false);
+    const [confirmDialog, confirm] = useConfirm();
 
     // Cargar información completa de inventario
     const fetchInventoryData = async () => {
         try {
             setLoading(true);
-            const [rawRes, coresRes, transRes] = await Promise.all([
+            const [rawRes, coresRes, matRes, catRes, itemsRes, transRes] = await Promise.all([
                 supabase.from('raw_materials').select('*').order('width_cm', { ascending: true }),
                 supabase.from('core_specifications').select('*').order('length_cm', { ascending: true }),
+                supabase.from('core_materials').select('*').order('created_at', { ascending: true }),
+                supabase
+                    .from('inventory_categories')
+                    .select('*')
+                    .order('display_order', { ascending: true })
+                    .order('name', { ascending: true }),
+                supabase.from('inventory_items').select('*').order('name', { ascending: true }),
                 supabase
                     .from('inventory_transactions')
                     .select(`
                         *,
                         raw_material:raw_materials(*),
                         core:core_specifications(*),
+                        core_material:core_materials(*),
+                        inventory_item:inventory_items(*),
                         creator:profiles(id, full_name, email)
                     `)
                     .order('created_at', { ascending: false })
@@ -130,6 +232,9 @@ export default function InventoryPanel() {
 
             if (rawRes.data) setRawMaterials(rawRes.data as RawMaterial[]);
             if (coresRes.data) setCores(coresRes.data as CoreSpecification[]);
+            if (matRes.data) setCoreMaterials(matRes.data as CoreMaterial[]);
+            if (catRes.data) setInvCategories(catRes.data as InventoryCategory[]);
+            if (itemsRes.data) setInvItems(itemsRes.data as InventoryItem[]);
             if (transRes.data) setTransactions(transRes.data as unknown as InventoryTransaction[]);
         } catch (err: any) {
             toast.error('Error al cargar inventario: ' + (err.message || 'Error'));
@@ -151,6 +256,15 @@ export default function InventoryPanel() {
                 fetchInventoryData();
             })
             .on('postgres_changes', { event: '*', schema: 'public', table: 'core_specifications' }, () => {
+                fetchInventoryData();
+            })
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'core_materials' }, () => {
+                fetchInventoryData();
+            })
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_items' }, () => {
+                fetchInventoryData();
+            })
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_categories' }, () => {
                 fetchInventoryData();
             })
             .subscribe();
@@ -183,15 +297,39 @@ export default function InventoryPanel() {
         );
     }, [cores]);
 
+    const totalCoreMaterialKg = useMemo(
+        () => coreMaterials.reduce((acc, m) => acc + Number(m.current_stock_kg || 0), 0),
+        [coreMaterials]
+    );
+
+    const totalCoreMaterialValue = useMemo(
+        () => coreMaterials.reduce((acc, m) => acc + Number(m.current_stock_kg || 0) * Number(m.cost_per_kg || 0), 0),
+        [coreMaterials]
+    );
+
+    const totalGeneralValue = useMemo(
+        () =>
+            invItems.reduce((acc, i) => acc + Number(i.current_stock || 0) * Number(i.avg_cost || 0), 0),
+        [invItems]
+    );
+
     const lowStockAlerts = useMemo(() => {
         const rawAlerts = rawMaterials.filter((m) => Number(m.current_stock_kg) <= Number(m.min_stock_alert_kg || 50));
         const coreAlerts = cores.filter((c) => Number(c.current_stock_units) <= Number(c.min_stock_alert_units || 30));
+        const materialAlerts = coreMaterials.filter(
+            (m) => Number(m.current_stock_kg) <= Number(m.min_stock_alert_kg || 0)
+        );
+        const itemAlerts = invItems.filter(
+            (i) => i.is_active && Number(i.current_stock) <= Number(i.min_stock_alert || 0)
+        );
         return {
-            count: rawAlerts.length + coreAlerts.length,
+            count: rawAlerts.length + coreAlerts.length + materialAlerts.length + itemAlerts.length,
             rawAlerts,
             coreAlerts,
+            materialAlerts,
+            itemAlerts,
         };
-    }, [rawMaterials, cores]);
+    }, [rawMaterials, cores, coreMaterials, invItems]);
 
     // Filtrar Kardex
     const filteredTransactions = useMemo(() => {
@@ -202,7 +340,7 @@ export default function InventoryPanel() {
             if (kardexSearch.trim() !== '') {
                 const q = kardexSearch.toLowerCase();
                 const matName = t.raw_material?.name?.toLowerCase() || '';
-                const coreName = t.core?.name?.toLowerCase() || '';
+                const coreName = (t.core?.name || t.core_material?.name || t.inventory_item?.name || '').toLowerCase();
                 const creator = t.creator?.full_name?.toLowerCase() || '';
                 const notes = t.notes?.toLowerCase() || '';
                 return matName.includes(q) || coreName.includes(q) || creator.includes(q) || notes.includes(q);
@@ -278,6 +416,10 @@ export default function InventoryPanel() {
             toast.error('Ingresa el nombre del material');
             return;
         }
+        if (!(Number(newRawCaliber) > 0)) {
+            toast.error('Ingresa el calibre de la bobina en micras');
+            return;
+        }
 
         try {
             setSaving(true);
@@ -286,6 +428,7 @@ export default function InventoryPanel() {
                 material_type: 'stretch',
                 color: newRawColor,
                 width_cm: Number(newRawWidth),
+                caliber_microns: Number(newRawCaliber),
                 cost_per_kg: Number(newRawCost) || 0,
                 min_stock_alert_kg: Number(newRawMinStock) || 50,
                 current_stock_kg: 0,
@@ -304,90 +447,415 @@ export default function InventoryPanel() {
         }
     };
 
-    // Registrar Entrada / Corte de Cores
+    // Armado de cores: descuenta kg del material y suma unidades (RPC atómica)
     const handleSaveCoreEntry = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!selectedCoreForEntry || !coreEntryUnits || Number(coreEntryUnits) <= 0) {
-            toast.error('Ingresa una cantidad válida de unidades');
+        const units = Math.floor(Number(coreEntryUnits));
+        if (!selectedCoreForEntry || !(units > 0)) {
+            toast.error('Ingresa una cantidad válida de cores armados');
+            return;
+        }
+        if (!(Number(selectedCoreForEntry.weight_grams) > 0)) {
+            toast.error('Define primero el peso promedio del core armado de esta medida');
             return;
         }
 
         try {
             setSaving(true);
-            const units = Math.floor(Number(coreEntryUnits));
-            const cost = Number(selectedCoreForEntry.standard_cost || 0);
-            const currentStock = Number(selectedCoreForEntry.current_stock_units || 0);
-            const newStock = currentStock + units;
-
-            // 1. Actualizar stock en core_specifications
-            const { error: updateError } = await supabase
-                .from('core_specifications')
-                .update({
-                    current_stock_units: newStock,
-                    updated_at: new Date().toISOString(),
-                })
-                .eq('id', selectedCoreForEntry.id);
-
-            if (updateError) throw updateError;
-
-            const { data: authData } = await supabase.auth.getUser();
-            const creatorId = authData?.user?.id || user?.id;
-            if (!creatorId) {
-                toast.error('Sesión de usuario requerida');
-                return;
-            }
-
-            // 2. Registrar en Kardex
-            const { error: transError } = await supabase.from('inventory_transactions').insert({
-                movement_type: 'produccion_core',
-                core_id: selectedCoreForEntry.id,
-                quantity: units,
-                unit_cost: cost,
-                total_cost: units * cost,
-                notes: coreEntryNotes || 'Corte de cores registrado en administración',
-                created_by: creatorId,
+            const { data, error } = await supabase.rpc('register_core_assembly', {
+                p_core_id: selectedCoreForEntry.id,
+                p_units: units,
+                ...(coreEntryNotes.trim() ? { p_notes: coreEntryNotes.trim() } : {}),
             });
+            if (error) throw error;
 
-            if (transError) throw transError;
-
-            toast.success(`Se sumaron +${units} unidades de ${selectedCoreForEntry.name}`);
+            const r = (data || {}) as { kg_used?: number; unit_cost?: number };
+            toast.success(
+                `+${units} cores de ${selectedCoreForEntry.length_cm} cm · ${fmtKg(Number(r.kg_used || 0))} kg de material · ${fmtCOP(Number(r.unit_cost || 0))} c/u`
+            );
             setShowCoreModal(false);
             setCoreEntryUnits('');
             setCoreEntryNotes('');
             fetchInventoryData();
         } catch (err: any) {
-            toast.error('Error registrando cores: ' + (err.message || 'Error'));
+            toast.error('Error registrando armado: ' + (err.message || 'Error'));
         } finally {
             setSaving(false);
         }
     };
 
-    // Actualizar Costo Estándar de Core
+    // Editar peso, mano de obra, material y costo promedio de una medida de core
     const handleUpdateCoreCost = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!editingCore || !editCoreCost || Number(editCoreCost) < 0) {
+        if (!editingCore || editCoreCost === '' || Number(editCoreCost) < 0) {
             toast.error('Ingresa un costo válido');
+            return;
+        }
+        if (editCoreWeight === '' || Number(editCoreWeight) < 0) {
+            toast.error('Ingresa un peso promedio válido en gramos');
+            return;
+        }
+        if (Number(editCoreLabor || 0) < 0) {
+            toast.error('La mano de obra no puede ser negativa');
             return;
         }
 
         try {
             setSaving(true);
-            const cost = Number(editCoreCost);
-            const { error } = await supabase
+            const weight = Number(editCoreWeight);
+            const { data, error } = await supabase
                 .from('core_specifications')
                 .update({
-                    standard_cost: cost,
+                    standard_cost: Number(editCoreCost),
+                    weight_grams: weight,
+                    labor_cost_per_unit: Number(editCoreLabor || 0),
+                    core_material_id: editCoreMaterialId || null,
                     updated_at: new Date().toISOString(),
                 })
-                .eq('id', editingCore.id);
+                .eq('id', editingCore.id)
+                .select('id');
 
             if (error) throw error;
+            if (!data || data.length === 0) throw new Error('No tienes permiso para editar esta medida');
 
-            toast.success(`Costo unitario de ${editingCore.name} actualizado a $${cost.toLocaleString()} COP`);
+            toast.success(`${editingCore.name} actualizado · ${weight.toLocaleString('es-CO')} g por core`);
             setShowEditCoreCostModal(false);
             fetchInventoryData();
         } catch (err: any) {
-            toast.error('Error actualizando costo: ' + (err.message || 'Error'));
+            toast.error('Error actualizando core: ' + (err.message || 'Error'));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // Crear Nueva Medida de Core
+    const handleCreateCore = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newCoreName.trim()) {
+            toast.error('Ingresa el nombre del core');
+            return;
+        }
+        if (!(Number(newCoreWeight) > 0)) {
+            toast.error('Ingresa el peso promedio del core armado en gramos');
+            return;
+        }
+        if (!newCoreMaterialId) {
+            toast.error('Selecciona el material de cores con el que se arma esta medida');
+            return;
+        }
+        try {
+            setSaving(true);
+            const material = coreMaterials.find((m) => m.id === newCoreMaterialId);
+            const labor = Number(newCoreLabor || 0);
+            const draft = { weight_grams: Number(newCoreWeight), labor_cost_per_unit: labor } as CoreSpecification;
+            const { error } = await supabase.from('core_specifications').insert({
+                name: newCoreName.trim(),
+                length_cm: Number(newCoreLength) || 50,
+                weight_grams: Number(newCoreWeight),
+                labor_cost_per_unit: labor,
+                core_material_id: newCoreMaterialId,
+                // Costo inicial estimado; cada armado lo recalcula por promedio ponderado
+                standard_cost: Math.round(estimateCoreUnitCost(draft, material)),
+                current_stock_units: 0,
+                min_stock_alert_units: Number(newCoreMinStock) || 30,
+            });
+            if (error) throw error;
+            toast.success('Nueva medida de core creada con éxito');
+            setShowNewCoreModal(false);
+            setNewCoreName('');
+            setNewCoreWeight('');
+            setNewCoreLabor('');
+            fetchInventoryData();
+        } catch (err: any) {
+            toast.error('Error al registrar core: ' + (err.message || 'Error'));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // Crear / editar material de cores (nombre, costo/kg, alerta)
+    const handleSaveMaterial = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!materialForm) return;
+        if (!materialForm.name.trim()) {
+            toast.error('Ingresa el nombre del material');
+            return;
+        }
+        if (Number(materialForm.cost) < 0 || Number(materialForm.minKg) < 0) {
+            toast.error('Los valores no pueden ser negativos');
+            return;
+        }
+        try {
+            setSaving(true);
+            const payload = {
+                name: materialForm.name.trim(),
+                cost_per_kg: Number(materialForm.cost || 0),
+                min_stock_alert_kg: Number(materialForm.minKg || 0),
+                updated_at: new Date().toISOString(),
+            };
+            const { data, error } = materialForm.id
+                ? await supabase.from('core_materials').update(payload).eq('id', materialForm.id).select('id')
+                : await supabase.from('core_materials').insert(payload).select('id');
+            if (error) throw error;
+            if (!data || data.length === 0) throw new Error('Solo un administrador puede gestionar el material de cores');
+            toast.success(materialForm.id ? 'Material actualizado' : 'Material de cores creado');
+            setMaterialForm(null);
+            fetchInventoryData();
+        } catch (err: any) {
+            toast.error('Error guardando material: ' + (err.message || 'Error'));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // Ajuste por conteo físico (kg reales en bodega)
+    const handleAdjustMaterial = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!adjustMaterial) return;
+        const kg = Number(adjustKg);
+        if (adjustKg.trim() === '' || !(kg >= 0)) {
+            toast.error('Ingresa los kilos contados (0 o más)');
+            return;
+        }
+        try {
+            setSaving(true);
+            const { error } = await supabase.rpc('adjust_core_material_stock', {
+                p_material_id: adjustMaterial.id,
+                p_new_stock_kg: kg,
+                ...(adjustNotes.trim() ? { p_notes: adjustNotes.trim() } : {}),
+            });
+            if (error) throw error;
+            toast.success(`${adjustMaterial.name}: stock ajustado a ${fmtKg(kg)} kg`);
+            setAdjustMaterial(null);
+            setAdjustKg('');
+            setAdjustNotes('');
+            fetchInventoryData();
+        } catch (err: any) {
+            toast.error('Error ajustando stock: ' + (err.message || 'Error'));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleDeleteMaterial = async (m: CoreMaterial) => {
+        const linked = cores.filter((c) => c.core_material_id === m.id).length;
+        const ok = await confirm({
+            title: `¿Eliminar el material "${m.name}"?`,
+            description: (
+                <>
+                    Tiene <b>{fmtKg(Number(m.current_stock_kg || 0))} kg</b> en bodega
+                    {linked > 0 ? <> y {linked} medida(s) de core quedarán sin material asignado</> : null}. El Kardex se
+                    conserva como historial.
+                </>
+            ),
+            confirmLabel: 'Eliminar material',
+        });
+        if (!ok) return;
+        try {
+            setSaving(true);
+            const { data, error } = await supabase.from('core_materials').delete().eq('id', m.id).select('id');
+            if (error) throw error;
+            if (!data || data.length === 0) throw new Error(DELETE_NO_PERMISSION);
+            toast.success(`Material "${m.name}" eliminado`);
+            fetchInventoryData();
+        } catch (err: any) {
+            toast.error('Error al eliminar material: ' + deleteErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // Eliminar Bobina Madre Registrada
+    const handleDeleteRawMaterial = async (m: RawMaterial) => {
+        const ok = await confirm({
+            title: `¿Eliminar la bobina madre "${m.name}" (${m.width_cm} cm)?`,
+            description: (
+                <>
+                    Se borrará la materia prima con sus{' '}
+                    <b>{Number(m.current_stock_kg || 0).toLocaleString('es-CO')} kg</b> registrados. Los movimientos
+                    del Kardex se conservan como historial.
+                </>
+            ),
+            confirmLabel: 'Eliminar bobina',
+        });
+        if (!ok) return;
+
+        try {
+            setSaving(true);
+            // Las FKs del Kardex son ON DELETE SET NULL: el historial se conserva
+            const { data, error } = await supabase.from('raw_materials').delete().eq('id', m.id).select('id');
+            if (error) throw error;
+            if (!data || data.length === 0) throw new Error(DELETE_NO_PERMISSION);
+
+            toast.success(`Bobina madre "${m.name}" eliminada del inventario`);
+            fetchInventoryData();
+        } catch (err: any) {
+            toast.error('Error al eliminar materia prima: ' + deleteErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // Ajustar / Vaciar stock de Bobina Madre a 0 kg
+    const handleResetRawStock = async (m: RawMaterial) => {
+        const currentStock = Number(m.current_stock_kg || 0);
+        if (currentStock === 0) {
+            toast.info('El stock de este material ya está en 0 kg');
+            return;
+        }
+
+        const ok = await confirm({
+            title: `¿Vaciar a 0 kg el stock de "${m.name}"?`,
+            description: `Actualmente hay ${currentStock.toLocaleString('es-CO')} kg registrados. Se creará un ajuste manual en el Kardex.`,
+            confirmLabel: 'Vaciar stock',
+        });
+        if (!ok) return;
+
+        try {
+            setSaving(true);
+            const { error: updateError } = await supabase
+                .from('raw_materials')
+                .update({ current_stock_kg: 0, updated_at: new Date().toISOString() })
+                .eq('id', m.id);
+
+            if (updateError) throw updateError;
+
+            const { data: authData } = await supabase.auth.getUser();
+            const creatorId = authData?.user?.id || user?.id;
+
+            if (creatorId) {
+                await supabase.from('inventory_transactions').insert({
+                    movement_type: 'ajuste_manual',
+                    raw_material_id: m.id,
+                    quantity: -currentStock,
+                    unit_cost: Number(m.cost_per_kg || 0),
+                    total_cost: -currentStock * Number(m.cost_per_kg || 0),
+                    notes: 'Vaciado / Reajuste de inventario a 0 kg',
+                    created_by: creatorId,
+                });
+            }
+
+            toast.success(`Stock de "${m.name}" ajustado a 0 kg`);
+            fetchInventoryData();
+        } catch (err: any) {
+            toast.error('Error al ajustar stock: ' + (err.message || 'Error'));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // Eliminar Core Registrado
+    const handleDeleteCore = async (c: CoreSpecification) => {
+        const ok = await confirm({
+            title: `¿Eliminar el core "${c.name}" (${c.length_cm} cm)?`,
+            description: (
+                <>
+                    Se borrará la medida con sus{' '}
+                    <b>{Number(c.current_stock_units || 0).toLocaleString('es-CO')} tubos</b> en stock y dejará de
+                    aparecer al crear pedidos. Los movimientos del Kardex se conservan como historial.
+                </>
+            ),
+            confirmLabel: 'Eliminar core',
+        });
+        if (!ok) return;
+
+        try {
+            setSaving(true);
+            const { data, error } = await supabase
+                .from('core_specifications')
+                .delete()
+                .eq('id', c.id)
+                .select('id');
+            if (error) throw error;
+            if (!data || data.length === 0) throw new Error(DELETE_NO_PERMISSION);
+
+            toast.success(`Core "${c.name}" eliminado del inventario`);
+            fetchInventoryData();
+        } catch (err: any) {
+            toast.error('Error al eliminar core: ' + deleteErrorMessage(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // Ajustar / Vaciar stock de Cores a 0 unidades
+    const handleResetCoreStock = async (c: CoreSpecification) => {
+        const currentUnits = Number(c.current_stock_units || 0);
+        if (currentUnits === 0) {
+            toast.info('El stock de este core ya está en 0 unidades');
+            return;
+        }
+
+        const ok = await confirm({
+            title: `¿Vaciar a 0 unidades el stock de "${c.name}"?`,
+            description: `Actualmente hay ${currentUnits.toLocaleString('es-CO')} tubos registrados. Se creará un ajuste manual en el Kardex.`,
+            confirmLabel: 'Vaciar stock',
+        });
+        if (!ok) return;
+
+        try {
+            setSaving(true);
+            const { error: updateError } = await supabase
+                .from('core_specifications')
+                .update({ current_stock_units: 0, updated_at: new Date().toISOString() })
+                .eq('id', c.id);
+
+            if (updateError) throw updateError;
+
+            const { data: authData } = await supabase.auth.getUser();
+            const creatorId = authData?.user?.id || user?.id;
+
+            if (creatorId) {
+                await supabase.from('inventory_transactions').insert({
+                    movement_type: 'ajuste_manual',
+                    core_id: c.id,
+                    quantity: -currentUnits,
+                    unit_cost: Number(c.standard_cost || 0),
+                    total_cost: -currentUnits * Number(c.standard_cost || 0),
+                    notes: 'Vaciado / Reajuste manual de cores a 0 tubos',
+                    created_by: creatorId,
+                });
+            }
+
+            toast.success(`Stock de "${c.name}" ajustado a 0 unidades`);
+            fetchInventoryData();
+        } catch (err: any) {
+            toast.error('Error al ajustar stock: ' + (err.message || 'Error'));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // Eliminar Movimiento de Kardex
+    const handleDeleteTransaction = async (t: InventoryTransaction) => {
+        const label = MOVEMENT_CONFIG[t.movement_type as InventoryMovementType]?.label || t.movement_type;
+        const ok = await confirm({
+            title: '¿Eliminar este movimiento del Kardex?',
+            description: (
+                <>
+                    {label} · {new Date(t.created_at).toLocaleString('es-CO')}
+                    <br />
+                    Solo se borra el registro histórico; el stock actual no se modifica.
+                </>
+            ),
+            confirmLabel: 'Eliminar registro',
+        });
+        if (!ok) return;
+
+        try {
+            setSaving(true);
+            const { data, error } = await supabase
+                .from('inventory_transactions')
+                .delete()
+                .eq('id', t.id)
+                .select('id');
+            if (error) throw error;
+            if (!data || data.length === 0) throw new Error(DELETE_NO_PERMISSION);
+
+            toast.success('Registro de movimiento eliminado del Kardex');
+            fetchInventoryData();
+        } catch (err: any) {
+            toast.error('Error al eliminar registro: ' + (err.message || 'Error'));
         } finally {
             setSaving(false);
         }
@@ -395,6 +863,7 @@ export default function InventoryPanel() {
 
     return (
         <div className="space-y-6">
+            {confirmDialog}
             {/* Header del módulo */}
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -435,16 +904,37 @@ export default function InventoryPanel() {
                         </>
                     )}
                     {subTab === 'cores' && (
-                        <button
-                            onClick={() => {
-                                setSelectedCoreForEntry(cores[0] || null);
-                                setShowCoreModal(true);
-                            }}
-                            className="flex items-center gap-2 rounded-lg bg-[#3F8346] px-4 py-2 text-xs font-semibold text-[#FDFDFD] shadow-sm transition hover:bg-[#2d6332]"
-                        >
-                            <Plus className="h-4 w-4" />
-                            Ingresar Cores Cortados
-                        </button>
+                        <>
+                            <button
+                                onClick={() => setMaterialForm({ id: null, name: '', cost: '', minKg: '20' })}
+                                className="flex items-center gap-1.5 rounded-lg border border-[#C8CDC9] bg-white px-4 py-2 text-xs font-semibold text-[#2E4040] shadow-sm transition hover:bg-[#C8CDC9]/20"
+                            >
+                                <Plus className="h-4 w-4" />
+                                Nuevo Material (Kg)
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setNewCoreMaterialId(coreMaterials[0]?.id || '');
+                                    setShowNewCoreModal(true);
+                                }}
+                                className="flex items-center gap-1.5 rounded-lg border border-[#C8CDC9] bg-white px-4 py-2 text-xs font-semibold text-[#2E4040] shadow-sm transition hover:bg-[#C8CDC9]/20"
+                            >
+                                <Plus className="h-4 w-4" />
+                                Nueva Medida Core
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setSelectedCoreForEntry(cores[0] || null);
+                                    setCoreEntryUnits('');
+                                    setShowCoreModal(true);
+                                }}
+                                disabled={cores.length === 0}
+                                className="flex items-center gap-2 rounded-lg bg-[#3F8346] px-4 py-2 text-xs font-semibold text-[#FDFDFD] shadow-sm transition hover:bg-[#2d6332] disabled:opacity-50"
+                            >
+                                <Plus className="h-4 w-4" />
+                                Registrar Armado de Cores
+                            </button>
+                        </>
                     )}
                 </div>
             </div>
@@ -483,10 +973,13 @@ export default function InventoryPanel() {
                     </div>
                     <div className="mt-3">
                         <div className="text-2xl font-bold text-[#2E4040]">
-                            {totalCoresCount.toLocaleString()} <span className="text-sm font-medium text-gray-500">tubos</span>
+                            {totalCoresCount.toLocaleString()} <span className="text-sm font-medium text-gray-500">armados</span>
                         </div>
-                        <div className="mt-1 text-xs text-blue-600 font-medium">
-                            Valoración: ${totalCoresValue.toLocaleString('es-CO')} COP
+                        <div className="mt-1 text-xs text-[#949E97] font-medium">
+                            + {fmtKg(totalCoreMaterialKg)} kg de material sin armar
+                        </div>
+                        <div className="mt-0.5 text-xs text-blue-600 font-medium">
+                            Valoración: {fmtCOP(totalCoresValue + totalCoreMaterialValue)} COP
                         </div>
                     </div>
                 </div>
@@ -503,10 +996,10 @@ export default function InventoryPanel() {
                     </div>
                     <div className="mt-3">
                         <div className="text-2xl font-bold text-[#2E4040]">
-                            ${(totalRawValue + totalCoresValue).toLocaleString('es-CO')}
+                            {fmtCOP(totalRawValue + totalCoresValue + totalCoreMaterialValue + totalGeneralValue)}
                         </div>
                         <div className="mt-1 text-xs text-gray-500 font-medium">
-                            Película madre + tubos cartón
+                            Película + cores + otros inventarios ({fmtCOP(totalGeneralValue)})
                         </div>
                     </div>
                 </div>
@@ -533,7 +1026,9 @@ export default function InventoryPanel() {
                             </span>
                         </div>
                         <div className="mt-1 text-xs text-amber-600 font-medium">
-                            {lowStockAlerts.count > 0 ? 'Requieren compra o corte' : 'Niveles óptimos de stock'}
+                            {lowStockAlerts.count > 0
+                                ? `Requieren compra o armado${lowStockAlerts.itemAlerts.length ? ` · ${lowStockAlerts.itemAlerts.length} en otros inventarios` : ''}`
+                                : 'Niveles óptimos de stock'}
                         </div>
                     </div>
                 </div>
@@ -561,7 +1056,23 @@ export default function InventoryPanel() {
                     }`}
                 >
                     <Layers className="h-3.5 w-3.5 text-[#3F8346]" />
-                    Cores / Tubos (Unidades por Medida)
+                    Cores (Material en Kg → Unidades por Medida)
+                </button>
+                <button
+                    onClick={() => setSubTab('general')}
+                    className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition ${
+                        subTab === 'general'
+                            ? 'bg-[#2E4040] text-white shadow-sm'
+                            : 'bg-white text-[#2E4040] border border-[#C8CDC9] hover:bg-[#C8CDC9]/20'
+                    }`}
+                >
+                    <Boxes className="h-3.5 w-3.5 text-[#3F8346]" />
+                    Otros Inventarios (Cintas, Cartón...)
+                    {lowStockAlerts.itemAlerts.length > 0 && (
+                        <span className="rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white">
+                            {lowStockAlerts.itemAlerts.length}
+                        </span>
+                    )}
                 </button>
                 <button
                     onClick={() => setSubTab('kardex')}
@@ -599,7 +1110,7 @@ export default function InventoryPanel() {
                                 <thead className="border-b border-[#C8CDC9] bg-[#F8F9FA] text-[#2E4040]">
                                     <tr>
                                         <th className="px-5 py-3.5 font-semibold">Material / Color</th>
-                                        <th className="px-4 py-3.5 font-semibold">Ancho</th>
+                                        <th className="px-4 py-3.5 font-semibold">Ancho / Calibre</th>
                                         <th className="px-4 py-3.5 font-semibold">Stock Actual</th>
                                         <th className="px-4 py-3.5 font-semibold">Costo / Kg</th>
                                         <th className="px-4 py-3.5 font-semibold">Valor Total</th>
@@ -638,6 +1149,9 @@ export default function InventoryPanel() {
                                                 </td>
                                                 <td className="px-4 py-4 text-[#2E4040] font-semibold text-sm">
                                                     {m.width_cm} cm
+                                                    <div className="text-[11px] font-medium text-[#949E97]">
+                                                        {Number(m.caliber_microns)} µ
+                                                    </div>
                                                 </td>
                                                 <td className="px-4 py-4 font-bold text-sm text-[#2E4040]">
                                                     {stock.toLocaleString(undefined, { maximumFractionDigits: 1 })} kg
@@ -664,17 +1178,38 @@ export default function InventoryPanel() {
                                                     )}
                                                 </td>
                                                 <td className="px-4 py-4 text-right">
-                                                    <button
-                                                        onClick={() => {
-                                                            setSelectedRawForEntry(m);
-                                                            setRawEntryCost(String(m.cost_per_kg || ''));
-                                                            setShowRawEntryModal(true);
-                                                        }}
-                                                        className="inline-flex items-center gap-1.5 rounded-md bg-[#3F8346] px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] transition"
-                                                    >
-                                                        <Plus className="h-3 w-3" />
-                                                        + Entrada Kg
-                                                    </button>
+                                                    <div className="flex items-center justify-end gap-1.5">
+                                                        <button
+                                                            onClick={() => {
+                                                                setSelectedRawForEntry(m);
+                                                                setRawEntryCost(String(m.cost_per_kg || ''));
+                                                                setShowRawEntryModal(true);
+                                                            }}
+                                                            className="inline-flex items-center gap-1 rounded-md bg-[#3F8346] px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] transition"
+                                                            title="Registrar compra o entrada en kilos"
+                                                        >
+                                                            <Plus className="h-3.5 w-3.5" />
+                                                            + Entrada
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleResetRawStock(m)}
+                                                            disabled={saving || Number(m.current_stock_kg || 0) === 0}
+                                                            className="rounded-md border border-[#C8CDC9] bg-white px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-amber-50 hover:text-amber-700 hover:border-amber-300 transition disabled:opacity-40"
+                                                            title="Vaciar / reajustar stock a 0 kg"
+                                                        >
+                                                            Vaciar
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleDeleteRawMaterial(m)}
+                                                            disabled={saving}
+                                                            className="rounded-md border border-red-200 bg-red-50 p-1.5 text-red-600 hover:bg-red-100 hover:text-red-700 transition disabled:opacity-40"
+                                                            title="Eliminar esta bobina madre del inventario"
+                                                        >
+                                                            <Trash2 className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    </div>
                                                 </td>
                                             </tr>
                                         );
@@ -690,87 +1225,315 @@ export default function InventoryPanel() {
             {/* SUBTAB 2: CORES                                                 */}
             {/* ============================================================== */}
             {subTab === 'cores' && (
-                <div className="space-y-4">
+                <div className="space-y-6">
                     {loading ? (
                         <div className="flex items-center justify-center py-20">
                             <Loader2 className="h-8 w-8 animate-spin text-[#3F8346]" />
                         </div>
-                    ) : cores.length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-[#C8CDC9] bg-white p-12 text-center">
-                            <Layers className="mx-auto h-12 w-12 text-[#949E97]" />
-                            <h3 className="mt-3 text-base font-semibold text-[#2E4040]">No hay cores registrados</h3>
-                        </div>
                     ) : (
-                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                            {cores.map((c) => {
-                                const stock = Number(c.current_stock_units || 0);
-                                const cost = Number(c.standard_cost || 0);
-                                const isLow = stock <= Number(c.min_stock_alert_units || 30);
-
-                                return (
-                                    <div
-                                        key={c.id}
-                                        className="rounded-xl border border-[#C8CDC9]/70 bg-white p-5 shadow-sm transition hover:shadow-md"
-                                    >
-                                        <div className="flex items-start justify-between">
-                                            <div>
-                                                <span className="inline-block rounded-md bg-[#2E4040]/10 px-2 py-0.5 text-xs font-bold text-[#2E4040]">
-                                                    Medida: {c.length_cm} cm
-                                                </span>
-                                                <h4 className="mt-2 text-base font-bold text-[#2E4040]">{c.name}</h4>
-                                            </div>
-                                            <div
-                                                className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
-                                                    isLow ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
-                                                }`}
-                                            >
-                                                {isLow ? 'Stock Bajo' : 'Disponible'}
-                                            </div>
-                                        </div>
-
-                                        <div className="mt-4 grid grid-cols-2 gap-2 rounded-lg bg-[#F8F9FA] p-3 text-xs">
-                                            <div>
-                                                <div className="text-[#949E97]">Stock Actual:</div>
-                                                <div className="text-xl font-bold text-[#2E4040]">
-                                                    {stock} <span className="text-xs font-normal text-gray-500">tubos</span>
-                                                </div>
-                                            </div>
-                                            <div>
-                                                <div className="text-[#949E97]">Costo Unitario:</div>
-                                                <div className="text-sm font-bold text-[#3F8346]">
-                                                    ${cost.toLocaleString('es-CO')} COP
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className="mt-4 flex items-center justify-between gap-2 pt-2 border-t border-[#C8CDC9]/50">
-                                            <button
-                                                onClick={() => {
-                                                    setEditingCore(c);
-                                                    setEditCoreCost(String(cost));
-                                                    setShowEditCoreCostModal(true);
-                                                }}
-                                                className="text-xs font-semibold text-gray-600 hover:text-[#2E4040] underline"
-                                            >
-                                                Editar Costo
-                                            </button>
-                                            <button
-                                                onClick={() => {
-                                                    setSelectedCoreForEntry(c);
-                                                    setShowCoreModal(true);
-                                                }}
-                                                className="inline-flex items-center gap-1 rounded-md bg-[#3F8346] px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] transition"
-                                            >
-                                                <Plus className="h-3 w-3" />
-                                                Ingresar Cores
-                                            </button>
-                                        </div>
+                        <>
+                            {/* ---------- 1. Material de cores en kg ---------- */}
+                            <div>
+                                <div className="mb-2 flex items-end justify-between">
+                                    <div>
+                                        <h3 className="text-sm font-bold text-[#2E4040]">1. Material de cores en bodega (kg)</h3>
+                                        <p className="text-[11px] text-[#949E97]">
+                                            Se compra por kg con factura de proveedor. Al armar cores se descuenta según el peso
+                                            de cada medida.
+                                        </p>
                                     </div>
-                                );
-                            })}
-                        </div>
+                                </div>
+                                {coreMaterials.length === 0 ? (
+                                    <div className="rounded-xl border border-dashed border-[#C8CDC9] bg-white p-8 text-center">
+                                        <Weight className="mx-auto h-10 w-10 text-[#949E97]" />
+                                        <p className="mt-2 text-xs text-[#949E97]">
+                                            No hay material de cores. Crea uno con &quot;Nuevo Material (Kg)&quot;.
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                                        {coreMaterials.map((m) => {
+                                            const kg = Number(m.current_stock_kg || 0);
+                                            const isLow = kg <= Number(m.min_stock_alert_kg || 0);
+                                            const linked = cores.filter((c) => c.core_material_id === m.id);
+                                            return (
+                                                <div
+                                                    key={m.id}
+                                                    className="rounded-xl border border-[#C8CDC9]/70 bg-white p-5 shadow-sm"
+                                                >
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div>
+                                                            <h4 className="text-base font-bold text-[#2E4040]">{m.name}</h4>
+                                                            <div className="text-[11px] text-[#949E97]">
+                                                                Costo promedio: {fmtCOP(Number(m.cost_per_kg || 0))} / kg · Alerta ≤{' '}
+                                                                {fmtKg(Number(m.min_stock_alert_kg || 0))} kg
+                                                            </div>
+                                                        </div>
+                                                        <span
+                                                            className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                                                                isLow ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                                                            }`}
+                                                        >
+                                                            {isLow ? 'Stock Bajo' : 'Disponible'}
+                                                        </span>
+                                                    </div>
+
+                                                    <div className="mt-3 flex items-baseline gap-3">
+                                                        <div className="text-2xl font-bold text-[#2E4040]">
+                                                            {fmtKg(kg)} <span className="text-sm font-medium text-gray-500">kg</span>
+                                                        </div>
+                                                        <div className="text-xs font-semibold text-[#3F8346]">
+                                                            {fmtCOP(kg * Number(m.cost_per_kg || 0))} COP
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="mt-3 rounded-lg bg-[#F8F9FA] p-3">
+                                                        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[#949E97]">
+                                                            Alcanza para armar aprox.
+                                                        </div>
+                                                        {linked.length === 0 ? (
+                                                            <div className="text-[11px] text-[#949E97]">
+                                                                Ninguna medida usa este material todavía.
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex flex-wrap gap-1.5">
+                                                                {linked.map((c) => {
+                                                                    const n = coresFromKg(kg, c);
+                                                                    return (
+                                                                        <span
+                                                                            key={c.id}
+                                                                            className="rounded-md border border-[#C8CDC9] bg-white px-2 py-0.5 text-[11px] text-[#2E4040]"
+                                                                        >
+                                                                            <b>{n === null ? '—' : n.toLocaleString('es-CO')}</b> de{' '}
+                                                                            {Number(c.length_cm)} cm
+                                                                        </span>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        )}
+                                                        <div className="mt-1.5 text-[10px] text-[#949E97]">
+                                                            Es una alternativa por medida: el mismo kilo sirve para una u otra.
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="mt-3 flex items-center justify-between gap-2 border-t border-[#C8CDC9]/50 pt-3">
+                                                        <div className="flex items-center gap-3">
+                                                            <button
+                                                                onClick={() =>
+                                                                    setMaterialForm({
+                                                                        id: m.id,
+                                                                        name: m.name,
+                                                                        cost: String(Number(m.cost_per_kg || 0)),
+                                                                        minKg: String(Number(m.min_stock_alert_kg || 0)),
+                                                                    })
+                                                                }
+                                                                className="text-xs font-semibold text-gray-600 underline hover:text-[#2E4040]"
+                                                            >
+                                                                Editar
+                                                            </button>
+                                                            <button
+                                                                onClick={() => {
+                                                                    setAdjustMaterial(m);
+                                                                    setAdjustKg(String(kg));
+                                                                    setAdjustNotes('');
+                                                                }}
+                                                                className="text-xs font-semibold text-amber-700 hover:underline"
+                                                                title="Ajustar al peso real contado en bodega"
+                                                            >
+                                                                Ajustar conteo
+                                                            </button>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-[10px] text-[#949E97]">
+                                                                Compras: Proveedores → Factura (línea &quot;Core&quot;)
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleDeleteMaterial(m)}
+                                                                disabled={saving}
+                                                                className="rounded-md border border-red-200 bg-red-50 p-1.5 text-red-600 transition hover:bg-red-100 disabled:opacity-40"
+                                                                title="Eliminar material"
+                                                            >
+                                                                <Trash2 className="h-3.5 w-3.5" />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* ---------- 2. Cores armados por medida ---------- */}
+                            <div>
+                                <div className="mb-2">
+                                    <h3 className="text-sm font-bold text-[#2E4040]">2. Cores armados por medida (unidades)</h3>
+                                    <p className="text-[11px] text-[#949E97]">
+                                        Costo por core = peso × costo/kg del material + mano de obra. Se descuenta 1 core por
+                                        rollo al despachar un pedido.
+                                    </p>
+                                </div>
+                                {cores.length === 0 ? (
+                                    <div className="rounded-xl border border-dashed border-[#C8CDC9] bg-white p-12 text-center">
+                                        <Layers className="mx-auto h-12 w-12 text-[#949E97]" />
+                                        <h3 className="mt-3 text-base font-semibold text-[#2E4040]">No hay medidas de core</h3>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                                        {cores.map((c) => {
+                                            const stock = Number(c.current_stock_units || 0);
+                                            const cost = Number(c.standard_cost || 0);
+                                            const weight = Number(c.weight_grams || 0);
+                                            const isLow = stock <= Number(c.min_stock_alert_units || 30);
+                                            const material = coreMaterials.find((m) => m.id === c.core_material_id);
+                                            const estimate = estimateCoreUnitCost(c, material);
+                                            const canBuild = material ? coresFromKg(Number(material.current_stock_kg || 0), c) : null;
+
+                                            return (
+                                                <div
+                                                    key={c.id}
+                                                    className="rounded-xl border border-[#C8CDC9]/70 bg-white p-5 shadow-sm transition hover:shadow-md"
+                                                >
+                                                    <div className="flex items-start justify-between">
+                                                        <div>
+                                                            <span className="inline-block rounded-md bg-[#2E4040]/10 px-2 py-0.5 text-xs font-bold text-[#2E4040]">
+                                                                Medida: {c.length_cm} cm
+                                                            </span>
+                                                            <h4 className="mt-2 text-base font-bold text-[#2E4040]">{c.name}</h4>
+                                                            <div className="text-[11px] text-[#949E97]">
+                                                                Material:{' '}
+                                                                {material ? (
+                                                                    material.name
+                                                                ) : (
+                                                                    <span className="font-semibold text-amber-700">sin asignar</span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                        <div
+                                                            className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                                                                isLow ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                                                            }`}
+                                                        >
+                                                            {isLow ? 'Stock Bajo' : 'Disponible'}
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="mt-4 grid grid-cols-2 gap-2 rounded-lg bg-[#F8F9FA] p-3 text-xs">
+                                                        <div>
+                                                            <div className="text-[#949E97]">Armados:</div>
+                                                            <div className="text-xl font-bold text-[#2E4040]">
+                                                                {stock.toLocaleString('es-CO')}{' '}
+                                                                <span className="text-xs font-normal text-gray-500">und</span>
+                                                            </div>
+                                                            {weight > 0 && (
+                                                                <div className="text-[11px] text-[#949E97]">
+                                                                    ≈ {fmtKg((stock * weight) / 1000)} kg
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <div>
+                                                            <div className="text-[#949E97]">Costo promedio:</div>
+                                                            <div className="text-sm font-bold text-[#3F8346]">{fmtCOP(cost)} c/u</div>
+                                                            <div className="text-[11px] text-[#949E97]">Próximo armado ≈ {fmtCOP(estimate)}</div>
+                                                        </div>
+                                                        <div className="col-span-2 grid grid-cols-2 gap-2 border-t border-[#C8CDC9]/60 pt-2">
+                                                            <div>
+                                                                <span className="text-[#949E97]">Peso: </span>
+                                                                {weight > 0 ? (
+                                                                    <span className="font-bold text-[#2E4040]">
+                                                                        {weight.toLocaleString('es-CO')} g
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="font-semibold text-amber-700">sin definir</span>
+                                                                )}
+                                                            </div>
+                                                            <div>
+                                                                <span className="text-[#949E97]">Mano de obra: </span>
+                                                                <span className="font-bold text-[#2E4040]">
+                                                                    {fmtCOP(Number(c.labor_cost_per_unit || 0))}
+                                                                </span>
+                                                            </div>
+                                                            <div className="col-span-2 text-[11px] text-[#949E97]">
+                                                                Con el material disponible se pueden armar{' '}
+                                                                <b className="text-[#2E4040]">
+                                                                    {canBuild === null ? '—' : canBuild.toLocaleString('es-CO')}
+                                                                </b>{' '}
+                                                                más.
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="mt-4 flex items-center justify-between gap-2 border-t border-[#C8CDC9]/50 pt-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <button
+                                                                onClick={() => {
+                                                                    setEditingCore(c);
+                                                                    setEditCoreCost(String(cost));
+                                                                    setEditCoreWeight(String(weight));
+                                                                    setEditCoreLabor(String(Number(c.labor_cost_per_unit || 0)));
+                                                                    setEditCoreMaterialId(c.core_material_id || '');
+                                                                    setShowEditCoreCostModal(true);
+                                                                }}
+                                                                className="text-xs font-semibold text-gray-600 underline hover:text-[#2E4040]"
+                                                            >
+                                                                Editar
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleResetCoreStock(c)}
+                                                                disabled={saving || stock === 0}
+                                                                className="text-[11px] font-semibold text-amber-700 hover:underline disabled:opacity-40"
+                                                                title="Vaciar stock a 0 unidades"
+                                                            >
+                                                                Vaciar
+                                                            </button>
+                                                        </div>
+                                                        <div className="flex items-center gap-1.5">
+                                                            <button
+                                                                onClick={() => {
+                                                                    setSelectedCoreForEntry(c);
+                                                                    setCoreEntryUnits('');
+                                                                    setShowCoreModal(true);
+                                                                }}
+                                                                className="inline-flex items-center gap-1 rounded-md bg-[#3F8346] px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#2d6332]"
+                                                            >
+                                                                <Plus className="h-3 w-3" />
+                                                                Armar
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleDeleteCore(c)}
+                                                                disabled={saving}
+                                                                className="rounded-md border border-red-200 bg-red-50 p-1.5 text-red-600 transition hover:bg-red-100 hover:text-red-700 disabled:opacity-40"
+                                                                title="Eliminar esta medida de core"
+                                                            >
+                                                                <Trash2 className="h-3.5 w-3.5" />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        </>
                     )}
                 </div>
+            )}
+
+            {/* ============================================================== */}
+            {/* SUBTAB: OTROS INVENTARIOS (cintas, cartón industrial, ...)      */}
+            {/* ============================================================== */}
+            {subTab === 'general' && (
+                <GeneralInventory
+                    categories={invCategories}
+                    items={invItems}
+                    loading={loading}
+                    isAdmin={profile?.role === 'admin'}
+                    onChanged={fetchInventoryData}
+                />
             )}
 
             {/* ============================================================== */}
@@ -819,7 +1582,17 @@ export default function InventoryPanel() {
                                         : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                                 }`}
                             >
-                                Corte Cores
+                                Armado Cores
+                            </button>
+                            <button
+                                onClick={() => setKardexFilterType('consumo_armado_core')}
+                                className={`rounded-full px-3 py-1 text-xs font-semibold transition whitespace-nowrap ${
+                                    kardexFilterType === 'consumo_armado_core'
+                                        ? 'bg-[#3F8346] text-white'
+                                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                }`}
+                            >
+                                Material a Armado
                             </button>
                             <button
                                 onClick={() => setKardexFilterType('consumo_pedido')}
@@ -830,6 +1603,26 @@ export default function InventoryPanel() {
                                 }`}
                             >
                                 Despachos / Consumo
+                            </button>
+                            <button
+                                onClick={() => setKardexFilterType('salida_venta')}
+                                className={`rounded-full px-3 py-1 text-xs font-semibold transition whitespace-nowrap ${
+                                    kardexFilterType === 'salida_venta'
+                                        ? 'bg-[#3F8346] text-white'
+                                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                }`}
+                            >
+                                Ventas / Salidas
+                            </button>
+                            <button
+                                onClick={() => setKardexFilterType('ajuste_manual')}
+                                className={`rounded-full px-3 py-1 text-xs font-semibold transition whitespace-nowrap ${
+                                    kardexFilterType === 'ajuste_manual'
+                                        ? 'bg-[#3F8346] text-white'
+                                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                }`}
+                            >
+                                Ajustes
                             </button>
                         </div>
                     </div>
@@ -859,6 +1652,7 @@ export default function InventoryPanel() {
                                         <th className="px-4 py-3.5 font-semibold">Costo Total</th>
                                         <th className="px-4 py-3.5 font-semibold">Registrado Por</th>
                                         <th className="px-4 py-3.5 font-semibold">Detalle / Notas</th>
+                                        <th className="px-4 py-3.5 text-right font-semibold">Acción</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-[#C8CDC9]/40">
@@ -875,9 +1669,21 @@ export default function InventoryPanel() {
                                             ? `${t.raw_material.name}`
                                             : t.core
                                             ? `${t.core.name}`
-                                            : 'Material general';
+                                            : t.core_material
+                                            ? `${t.core_material.name} (material cores)`
+                                            : t.inventory_item
+                                            ? t.inventory_item.name
+                                            : 'Material eliminado / general';
 
-                                        const unitDesc = t.raw_material ? 'kg' : 'tubos';
+                                        const unitDesc = t.core_id
+                                            ? 'cores'
+                                            : t.inventory_item
+                                            ? t.inventory_item.unit
+                                            : 'kg';
+                                        const qty = Number(t.quantity);
+                                        // Los ajustes manuales guardan el signo en la cantidad
+                                        const isPositive =
+                                            t.movement_type === 'ajuste_manual' ? qty >= 0 : config.isPositive;
 
                                         return (
                                             <tr key={t.id} className="hover:bg-[#F9FBFA] transition-colors">
@@ -897,14 +1703,14 @@ export default function InventoryPanel() {
                                                 </td>
                                                 <td className="px-4 py-3 font-bold text-sm">
                                                     <span
-                                                        className={config.isPositive ? 'text-emerald-700' : 'text-purple-700'}
+                                                        className={isPositive ? 'text-emerald-700' : 'text-purple-700'}
                                                     >
-                                                        {config.isPositive ? '+' : '-'}
-                                                        {Number(t.quantity).toLocaleString()} {unitDesc}
+                                                        {isPositive ? '+' : '-'}
+                                                        {fmtKg(Math.abs(qty))} {unitDesc}
                                                     </span>
                                                 </td>
                                                 <td className="px-4 py-3 font-medium text-gray-700">
-                                                    ${Number(t.total_cost || 0).toLocaleString('es-CO')}
+                                                    {fmtCOP(Math.abs(Number(t.total_cost || 0)))}
                                                 </td>
                                                 <td className="px-4 py-3 text-gray-600">
                                                     <div className="flex items-center gap-1.5">
@@ -916,6 +1722,17 @@ export default function InventoryPanel() {
                                                 </td>
                                                 <td className="px-4 py-3 text-gray-500 text-[11px] max-w-[200px] truncate">
                                                     {t.notes || '—'}
+                                                </td>
+                                                <td className="px-4 py-3 text-right">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleDeleteTransaction(t)}
+                                                        disabled={saving}
+                                                        className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600 transition disabled:opacity-40"
+                                                        title="Eliminar este registro de inventario del Kardex"
+                                                    >
+                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                    </button>
                                                 </td>
                                             </tr>
                                         );
@@ -963,7 +1780,7 @@ export default function InventoryPanel() {
                                 >
                                     {rawMaterials.map((m) => (
                                         <option key={m.id} value={m.id}>
-                                            {m.name} ({m.width_cm} cm) — Stock actual: {Number(m.current_stock_kg).toLocaleString()} kg
+                                            {m.name} ({m.width_cm} cm · {Number(m.caliber_microns)} µ) — Stock actual: {Number(m.current_stock_kg).toLocaleString()} kg
                                         </option>
                                     ))}
                                 </select>
@@ -1068,7 +1885,7 @@ export default function InventoryPanel() {
                                 />
                             </div>
 
-                            <div className="grid grid-cols-2 gap-3">
+                            <div className="grid grid-cols-3 gap-3">
                                 <div>
                                     <label className="block text-xs font-semibold text-[#2E4040] mb-1">Color:</label>
                                     <select
@@ -1092,6 +1909,21 @@ export default function InventoryPanel() {
                                         value={newRawWidth}
                                         onChange={(e) => setNewRawWidth(e.target.value)}
                                         placeholder="45, 50, 60..."
+                                        className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-[#2E4040] mb-1">
+                                        Calibre (micras) *:
+                                    </label>
+                                    <input
+                                        type="number"
+                                        required
+                                        min="1"
+                                        step="0.1"
+                                        value={newRawCaliber}
+                                        onChange={(e) => setNewRawCaliber(e.target.value)}
+                                        placeholder="17"
                                         className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
                                     />
                                 </div>
@@ -1146,80 +1978,477 @@ export default function InventoryPanel() {
             )}
 
             {/* ============================================================== */}
-            {/* MODAL: INGRESAR CORES CORTADOS                                  */}
+            {/* MODAL: REGISTRAR ARMADO DE CORES                                */}
             {/* ============================================================== */}
-            {showCoreModal && selectedCoreForEntry && (
+            {showCoreModal && selectedCoreForEntry && (() => {
+                const c = selectedCoreForEntry;
+                const material = coreMaterials.find((m) => m.id === c.core_material_id) || null;
+                const units = Math.floor(Number(coreEntryUnits) || 0);
+                const weight = Number(c.weight_grams || 0);
+                // kg a descontar = unidades x peso promedio del core armado
+                const kgUsed = (units * weight) / 1000;
+                const available = Number(material?.current_stock_kg || 0);
+                const materialCost = kgUsed * Number(material?.cost_per_kg || 0);
+                const laborCost = units * Number(c.labor_cost_per_unit || 0);
+                const unitCost = units > 0 ? (materialCost + laborCost) / units : 0;
+                const missingWeight = weight <= 0;
+                const insufficient = !!material && kgUsed > available;
+                const blocked = !material || missingWeight || insufficient || units <= 0;
+
+                return (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+                        <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl animate-in fade-in zoom-in-95">
+                            <div className="flex items-center justify-between border-b border-[#C8CDC9] pb-3">
+                                <h3 className="font-heading text-lg font-bold text-[#2E4040]">Registrar Armado de Cores</h3>
+                                <button
+                                    onClick={() => setShowCoreModal(false)}
+                                    className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"
+                                >
+                                    <X className="h-5 w-5" />
+                                </button>
+                            </div>
+
+                            <form onSubmit={handleSaveCoreEntry} className="mt-4 space-y-4">
+                                <div>
+                                    <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Medida armada:</label>
+                                    <select
+                                        value={c.id}
+                                        onChange={(e) => {
+                                            const found = cores.find((x) => x.id === e.target.value);
+                                            if (found) setSelectedCoreForEntry(found);
+                                        }}
+                                        className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                    >
+                                        {cores.map((x) => (
+                                            <option key={x.id} value={x.id}>
+                                                {x.name} ({x.length_cm} cm) — Stock: {x.current_stock_units} und
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <div>
+                                        <label className="mb-1 block text-xs font-semibold text-[#2E4040]">
+                                            Cores armados (und) *:
+                                        </label>
+                                        <input
+                                            type="number"
+                                            required
+                                            min="1"
+                                            step="1"
+                                            value={coreEntryUnits}
+                                            onChange={(e) => setCoreEntryUnits(e.target.value)}
+                                            placeholder="Ej: 100"
+                                            className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-sm font-bold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                        />
+                                    </div>
+                                </div>
+                                <p className="-mt-2 text-[11px] text-[#949E97]">
+                                    Kg a descontar = cores armados × peso promedio del core armado (
+                                    {weight > 0 ? `${weight.toLocaleString('es-CO')} g` : 'sin definir'}).
+                                </p>
+
+                                <div
+                                    className={`rounded-lg border p-3 text-xs ${
+                                        blocked && units > 0 ? 'border-red-200 bg-red-50 text-red-800' : 'border-blue-100 bg-blue-50 text-blue-900'
+                                    }`}
+                                >
+                                    {!material ? (
+                                        <span className="font-semibold">
+                                            Esta medida no tiene material asignado. Usa &quot;Editar&quot; en la medida para asignarlo.
+                                        </span>
+                                    ) : (
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between">
+                                                <span>
+                                                    Material ({units} × {weight.toLocaleString('es-CO')} g):
+                                                </span>
+                                                <span className="font-semibold">
+                                                    {fmtKg(kgUsed)} kg de {fmtKg(available)} kg
+                                                </span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span>Costo material:</span>
+                                                <span>{fmtCOP(materialCost)}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span>Mano de obra:</span>
+                                                <span>{fmtCOP(laborCost)}</span>
+                                            </div>
+                                            <div className="flex justify-between border-t border-current/20 pt-1 font-bold">
+                                                <span>Costo por core:</span>
+                                                <span>{fmtCOP(unitCost)}</span>
+                                            </div>
+                                            {insufficient && (
+                                                <div className="pt-1 font-semibold text-red-700">
+                                                    Material insuficiente: faltan {fmtKg(kgUsed - available)} kg. Registra la compra
+                                                    o ajusta el conteo del material.
+                                                </div>
+                                            )}
+                                            {missingWeight && units > 0 && (
+                                                <div className="pt-1 font-semibold text-red-700">
+                                                    La medida no tiene peso promedio del core armado: defínelo con
+                                                    &quot;Editar&quot;.
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div>
+                                    <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Notas:</label>
+                                    <input
+                                        type="text"
+                                        value={coreEntryNotes}
+                                        onChange={(e) => setCoreEntryNotes(e.target.value)}
+                                        placeholder="Ej: Turno de la mañana - Lote 1"
+                                        className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-end gap-3 border-t border-[#C8CDC9] pt-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowCoreModal(false)}
+                                        className="rounded-lg border border-[#C8CDC9] px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                                    >
+                                        Cancelar
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={saving || blocked}
+                                        className="flex items-center gap-1.5 rounded-lg bg-[#3F8346] px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] disabled:opacity-50"
+                                    >
+                                        {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Registrar Armado'}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {/* ============================================================== */}
+            {/* MODAL: EDITAR MEDIDA DE CORE                                    */}
+            {/* ============================================================== */}
+            {showEditCoreCostModal && editingCore && (() => {
+                const material = coreMaterials.find((m) => m.id === editCoreMaterialId) || null;
+                const estimate = estimateCoreUnitCost(
+                    {
+                        ...editingCore,
+                        weight_grams: Number(editCoreWeight || 0),
+                        labor_cost_per_unit: Number(editCoreLabor || 0),
+                    },
+                    material
+                );
+                return (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+                        <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl animate-in fade-in zoom-in-95">
+                            <div className="flex items-center justify-between border-b border-[#C8CDC9] pb-3">
+                                <h3 className="font-heading text-base font-bold text-[#2E4040]">
+                                    Editar {editingCore.name} ({editingCore.length_cm} cm)
+                                </h3>
+                                <button
+                                    onClick={() => setShowEditCoreCostModal(false)}
+                                    className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"
+                                >
+                                    <X className="h-5 w-5" />
+                                </button>
+                            </div>
+
+                            <form onSubmit={handleUpdateCoreCost} className="mt-4 space-y-4">
+                                <div>
+                                    <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Material de cores:</label>
+                                    <select
+                                        value={editCoreMaterialId}
+                                        onChange={(e) => setEditCoreMaterialId(e.target.value)}
+                                        className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                    >
+                                        <option value="">— Sin asignar —</option>
+                                        {coreMaterials.map((m) => (
+                                            <option key={m.id} value={m.id}>
+                                                {m.name} ({fmtKg(Number(m.current_stock_kg || 0))} kg)
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="mb-1 block text-xs font-semibold text-[#2E4040]">
+                                            Peso core armado (g):
+                                        </label>
+                                        <input
+                                            type="number"
+                                            required
+                                            min="0"
+                                            step="1"
+                                            value={editCoreWeight}
+                                            onChange={(e) => setEditCoreWeight(e.target.value)}
+                                            placeholder="Ej: 120"
+                                            className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-sm font-bold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="mb-1 block text-xs font-semibold text-[#2E4040]">
+                                            Mano de obra / core ($):
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            step="1"
+                                            value={editCoreLabor}
+                                            onChange={(e) => setEditCoreLabor(e.target.value)}
+                                            placeholder="Ej: 150"
+                                            className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-sm font-bold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                        />
+                                    </div>
+                                </div>
+                                <p className="-mt-2 text-[11px] text-[#949E97]">
+                                    El peso convierte kg de material en unidades y se resta del peso del rollo para calcular la
+                                    película. Los pedidos ya creados conservan el peso que tenían.
+                                </p>
+
+                                <div className="rounded-lg bg-[#F8F9FA] p-3 text-xs text-[#2E4040]">
+                                    Costo estimado del próximo armado: <b>{fmtCOP(estimate)}</b> por core
+                                    {material ? ` (${fmtCOP(Number(material.cost_per_kg || 0))}/kg)` : ''}.
+                                </div>
+
+                                <div>
+                                    <label className="mb-1 block text-xs font-semibold text-[#2E4040]">
+                                        Costo promedio en stock ($ por core):
+                                    </label>
+                                    <input
+                                        type="number"
+                                        required
+                                        min="0"
+                                        value={editCoreCost}
+                                        onChange={(e) => setEditCoreCost(e.target.value)}
+                                        className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-sm text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                    />
+                                    <p className="mt-1 text-[11px] text-[#949E97]">
+                                        Se recalcula solo en cada armado. Cámbialo únicamente para corregir el valor de los cores
+                                        que ya están en stock.
+                                    </p>
+                                </div>
+
+                                <div className="flex items-center justify-end gap-3 border-t border-[#C8CDC9] pt-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowEditCoreCostModal(false)}
+                                        className="rounded-lg border border-[#C8CDC9] px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                                    >
+                                        Cancelar
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={saving}
+                                        className="flex items-center gap-1.5 rounded-lg bg-[#3F8346] px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] disabled:opacity-50"
+                                    >
+                                        {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Guardar Cambios'}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {/* ============================================================== */}
+            {/* MODAL: CREAR NUEVA MEDIDA DE CORE                               */}
+            {/* ============================================================== */}
+            {showNewCoreModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
                     <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl animate-in fade-in zoom-in-95">
                         <div className="flex items-center justify-between border-b border-[#C8CDC9] pb-3">
-                            <h3 className="font-heading text-lg font-bold text-[#2E4040]">
-                                Ingresar Cores Cortados
-                            </h3>
+                            <h3 className="font-heading text-base font-bold text-[#2E4040]">Nueva Medida de Core</h3>
                             <button
-                                onClick={() => setShowCoreModal(false)}
+                                onClick={() => setShowNewCoreModal(false)}
                                 className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"
                             >
                                 <X className="h-5 w-5" />
                             </button>
                         </div>
 
-                        <form onSubmit={handleSaveCoreEntry} className="mt-4 space-y-4">
-                            <div>
-                                <label className="block text-xs font-semibold text-[#2E4040] mb-1">
-                                    Medida de Core:
-                                </label>
-                                <select
-                                    value={selectedCoreForEntry.id}
-                                    onChange={(e) => {
-                                        const found = cores.find((c) => c.id === e.target.value);
-                                        if (found) setSelectedCoreForEntry(found);
-                                    }}
-                                    className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
-                                >
-                                    {cores.map((c) => (
-                                        <option key={c.id} value={c.id}>
-                                            {c.name} ({c.length_cm} cm) — Stock: {c.current_stock_units} unidades
-                                        </option>
-                                    ))}
-                                </select>
+                        {coreMaterials.length === 0 ? (
+                            <div className="mt-4 rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
+                                Primero crea un material de cores con &quot;Nuevo Material (Kg)&quot;.
                             </div>
+                        ) : (
+                            <form onSubmit={handleCreateCore} className="mt-4 space-y-4">
+                                <div>
+                                    <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Nombre Identificador:</label>
+                                    <input
+                                        type="text"
+                                        required
+                                        value={newCoreName}
+                                        onChange={(e) => setNewCoreName(e.target.value)}
+                                        placeholder="Ej: Core Cartón 50 cm"
+                                        className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                    />
+                                </div>
 
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Medida (cm):</label>
+                                        <input
+                                            type="number"
+                                            required
+                                            min="1"
+                                            step="1"
+                                            value={newCoreLength}
+                                            onChange={(e) => setNewCoreLength(e.target.value)}
+                                            placeholder="15, 30, 45, 50, 60..."
+                                            className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Material:</label>
+                                        <select
+                                            value={newCoreMaterialId}
+                                            onChange={(e) => setNewCoreMaterialId(e.target.value)}
+                                            className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                        >
+                                            {coreMaterials.map((m) => (
+                                                <option key={m.id} value={m.id}>
+                                                    {m.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="mb-1 block text-xs font-semibold text-[#2E4040]">
+                                            Peso core armado (g) *:
+                                        </label>
+                                        <input
+                                            type="number"
+                                            required
+                                            min="1"
+                                            step="1"
+                                            value={newCoreWeight}
+                                            onChange={(e) => setNewCoreWeight(e.target.value)}
+                                            placeholder="Ej: 120"
+                                            className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="mb-1 block text-xs font-semibold text-[#2E4040]">
+                                            Mano de obra / core ($):
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            step="1"
+                                            value={newCoreLabor}
+                                            onChange={(e) => setNewCoreLabor(e.target.value)}
+                                            placeholder="Ej: 150"
+                                            className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                        />
+                                    </div>
+                                </div>
+                                <p className="-mt-2 text-[11px] text-[#949E97]">
+                                    Pesa varios cores ya armados de esta medida y saca el promedio. Ese peso convierte los kg de
+                                    material en unidades.
+                                </p>
+
+                                <div>
+                                    <label className="mb-1 block text-xs font-semibold text-[#2E4040]">
+                                        Alerta Stock Mínimo (unidades):
+                                    </label>
+                                    <input
+                                        type="number"
+                                        required
+                                        min="1"
+                                        value={newCoreMinStock}
+                                        onChange={(e) => setNewCoreMinStock(e.target.value)}
+                                        placeholder="30"
+                                        className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-end gap-3 border-t border-[#C8CDC9] pt-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowNewCoreModal(false)}
+                                        className="rounded-lg border border-[#C8CDC9] px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                                    >
+                                        Cancelar
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={saving}
+                                        className="flex items-center gap-1.5 rounded-lg bg-[#3F8346] px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] disabled:opacity-50"
+                                    >
+                                        {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Crear Medida'}
+                                    </button>
+                                </div>
+                            </form>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* ============================================================== */}
+            {/* MODAL: CREAR / EDITAR MATERIAL DE CORES                         */}
+            {/* ============================================================== */}
+            {materialForm && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+                    <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl animate-in fade-in zoom-in-95">
+                        <div className="flex items-center justify-between border-b border-[#C8CDC9] pb-3">
+                            <h3 className="font-heading text-base font-bold text-[#2E4040]">
+                                {materialForm.id ? 'Editar Material de Cores' : 'Nuevo Material de Cores'}
+                            </h3>
+                            <button onClick={() => setMaterialForm(null)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100">
+                                <X className="h-5 w-5" />
+                            </button>
+                        </div>
+                        <form onSubmit={handleSaveMaterial} className="mt-4 space-y-4">
                             <div>
-                                <label className="block text-xs font-semibold text-[#2E4040] mb-1">
-                                    Cantidad de Unidades Cortadas *:
-                                </label>
-                                <input
-                                    type="number"
-                                    required
-                                    min="1"
-                                    value={coreEntryUnits}
-                                    onChange={(e) => setCoreEntryUnits(e.target.value)}
-                                    placeholder="Ej: 100"
-                                    className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-sm font-bold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
-                                />
-                            </div>
-
-                            <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-800">
-                                <span className="font-semibold">Costo Prefijado:</span> $
-                                {Number(selectedCoreForEntry.standard_cost || 0).toLocaleString('es-CO')} COP por unidad.
-                                El operario no necesita ingresar precios; el sistema valoriza el lote automáticamente.
-                            </div>
-
-                            <div>
-                                <label className="block text-xs font-semibold text-[#2E4040] mb-1">Notas:</label>
+                                <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Nombre:</label>
                                 <input
                                     type="text"
-                                    value={coreEntryNotes}
-                                    onChange={(e) => setCoreEntryNotes(e.target.value)}
-                                    placeholder="Ej: Turno de la mañana - Lote 1"
+                                    required
+                                    value={materialForm.name}
+                                    onChange={(e) => setMaterialForm({ ...materialForm, name: e.target.value })}
+                                    placeholder="Ej: Cartón para cores 3 pulgadas"
                                     className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
                                 />
                             </div>
-
-                            <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#C8CDC9]">
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Costo / kg ($):</label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        value={materialForm.cost}
+                                        onChange={(e) => setMaterialForm({ ...materialForm, cost: e.target.value })}
+                                        placeholder="Ej: 3800"
+                                        className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Alerta mínimo (kg):</label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        value={materialForm.minKg}
+                                        onChange={(e) => setMaterialForm({ ...materialForm, minKg: e.target.value })}
+                                        className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                    />
+                                </div>
+                            </div>
+                            <p className="text-[11px] text-[#949E97]">
+                                El costo/kg se recalcula por promedio ponderado con cada factura de compra. Edítalo aquí solo para
+                                fijar el valor inicial o corregirlo.
+                            </p>
+                            <div className="flex items-center justify-end gap-3 border-t border-[#C8CDC9] pt-3">
                                 <button
                                     type="button"
-                                    onClick={() => setShowCoreModal(false)}
+                                    onClick={() => setMaterialForm(null)}
                                     className="rounded-lg border border-[#C8CDC9] px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
                                 >
                                     Cancelar
@@ -1229,7 +2458,7 @@ export default function InventoryPanel() {
                                     disabled={saving}
                                     className="flex items-center gap-1.5 rounded-lg bg-[#3F8346] px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] disabled:opacity-50"
                                 >
-                                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Sumar al Stock'}
+                                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Guardar'}
                                 </button>
                             </div>
                         </form>
@@ -1238,52 +2467,57 @@ export default function InventoryPanel() {
             )}
 
             {/* ============================================================== */}
-            {/* MODAL: EDITAR COSTO ESTÁNDAR DE CORE                            */}
+            {/* MODAL: AJUSTE POR CONTEO FÍSICO DEL MATERIAL                    */}
             {/* ============================================================== */}
-            {showEditCoreCostModal && editingCore && (
+            {adjustMaterial && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
                     <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl animate-in fade-in zoom-in-95">
                         <div className="flex items-center justify-between border-b border-[#C8CDC9] pb-3">
-                            <h3 className="font-heading text-base font-bold text-[#2E4040]">
-                                Editar Costo Unitario de Core
-                            </h3>
-                            <button
-                                onClick={() => setShowEditCoreCostModal(false)}
-                                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"
-                            >
+                            <h3 className="font-heading text-base font-bold text-[#2E4040]">Ajustar conteo: {adjustMaterial.name}</h3>
+                            <button onClick={() => setAdjustMaterial(null)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100">
                                 <X className="h-5 w-5" />
                             </button>
                         </div>
-
-                        <form onSubmit={handleUpdateCoreCost} className="mt-4 space-y-4">
-                            <div>
-                                <label className="block text-xs font-semibold text-[#2E4040] mb-1">
-                                    Medida: {editingCore.name} ({editingCore.length_cm} cm)
-                                </label>
-                                <div className="mt-2 text-xs text-gray-500">
-                                    Este valor se usará para costear automáticamente la producción sin que los operarios tengan que ingresar precios.
-                                </div>
+                        <form onSubmit={handleAdjustMaterial} className="mt-4 space-y-4">
+                            <div className="text-xs text-[#949E97]">
+                                Stock en sistema: <b className="text-[#2E4040]">{fmtKg(Number(adjustMaterial.current_stock_kg || 0))} kg</b>
                             </div>
-
                             <div>
-                                <label className="block text-xs font-semibold text-[#2E4040] mb-1">
-                                    Nuevo Costo Estándar ($ COP):
-                                </label>
+                                <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Kg reales contados en bodega *:</label>
                                 <input
                                     type="number"
                                     required
                                     min="0"
-                                    value={editCoreCost}
-                                    onChange={(e) => setEditCoreCost(e.target.value)}
-                                    placeholder="Ej: 1350"
+                                    step="0.01"
+                                    value={adjustKg}
+                                    onChange={(e) => setAdjustKg(e.target.value)}
                                     className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-sm font-bold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
                                 />
+                                {adjustKg.trim() !== '' && (
+                                    <p className="mt-1 text-[11px] text-[#949E97]">
+                                        Diferencia:{' '}
+                                        <b>
+                                            {Number(adjustKg) - Number(adjustMaterial.current_stock_kg || 0) >= 0 ? '+' : ''}
+                                            {fmtKg(Number(adjustKg) - Number(adjustMaterial.current_stock_kg || 0))} kg
+                                        </b>{' '}
+                                        (queda en el Kardex como ajuste manual)
+                                    </p>
+                                )}
                             </div>
-
-                            <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#C8CDC9]">
+                            <div>
+                                <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Motivo:</label>
+                                <input
+                                    type="text"
+                                    value={adjustNotes}
+                                    onChange={(e) => setAdjustNotes(e.target.value)}
+                                    placeholder="Ej: Inventario inicial / conteo mensual"
+                                    className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                />
+                            </div>
+                            <div className="flex items-center justify-end gap-3 border-t border-[#C8CDC9] pt-3">
                                 <button
                                     type="button"
-                                    onClick={() => setShowEditCoreCostModal(false)}
+                                    onClick={() => setAdjustMaterial(null)}
                                     className="rounded-lg border border-[#C8CDC9] px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
                                 >
                                     Cancelar
@@ -1293,7 +2527,7 @@ export default function InventoryPanel() {
                                     disabled={saving}
                                     className="flex items-center gap-1.5 rounded-lg bg-[#3F8346] px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] disabled:opacity-50"
                                 >
-                                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Actualizar Costo'}
+                                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Guardar Ajuste'}
                                 </button>
                             </div>
                         </form>

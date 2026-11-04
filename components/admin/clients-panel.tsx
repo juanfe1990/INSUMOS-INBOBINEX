@@ -6,6 +6,26 @@ import type { Client } from '@/lib/types';
 import { Building2, Plus, Search, Loader2, Phone, MapPin, Mail, UserCheck, Edit2 } from 'lucide-react';
 import { toast } from 'sonner';
 
+const EMPTY_FORM = {
+    business_name: '',
+    nit_rut: '',
+    contact_name: '',
+    phone: '',
+    email: '',
+    delivery_address: '',
+    city: 'Medellín',
+    notes: '',
+    payment_terms_days: '0',
+    credit_limit: '',
+};
+
+/** Plazos de pago habituales (el campo acepta cualquier número de días) */
+const TERM_PRESETS = [0, 8, 15, 30, 45, 60, 90];
+
+export function termsLabel(days: number) {
+    return days > 0 ? `Crédito ${days} días` : 'Contado';
+}
+
 export default function ClientsPanel() {
     const supabase = createClient();
     const [clients, setClients] = useState<Client[]>([]);
@@ -15,16 +35,7 @@ export default function ClientsPanel() {
     const [saving, setSaving] = useState(false);
     const [editingClient, setEditingClient] = useState<Client | null>(null);
 
-    const [form, setForm] = useState({
-        business_name: '',
-        nit_rut: '',
-        contact_name: '',
-        phone: '',
-        email: '',
-        delivery_address: '',
-        city: 'Medellín',
-        notes: '',
-    });
+    const [form, setForm] = useState(EMPTY_FORM);
 
     const fetchClients = async () => {
         try {
@@ -53,6 +64,15 @@ export default function ClientsPanel() {
             toast.error('Por favor completa los campos obligatorios (*)');
             return;
         }
+        const terms = Number(form.payment_terms_days || 0);
+        if (!Number.isInteger(terms) || terms < 0) {
+            toast.error('El plazo de pago debe ser un número entero de días (0 = contado)');
+            return;
+        }
+        if (form.credit_limit !== '' && Number(form.credit_limit) < 0) {
+            toast.error('El cupo de crédito no puede ser negativo');
+            return;
+        }
 
         try {
             setSaving(true);
@@ -65,6 +85,8 @@ export default function ClientsPanel() {
                 delivery_address: form.delivery_address.trim(),
                 city: form.city.trim() || 'Medellín',
                 notes: form.notes.trim() || null,
+                payment_terms_days: terms,
+                credit_limit: form.credit_limit === '' ? null : Number(form.credit_limit),
             };
 
             if (editingClient) {
@@ -82,16 +104,7 @@ export default function ClientsPanel() {
 
             setShowModal(false);
             setEditingClient(null);
-            setForm({
-                business_name: '',
-                nit_rut: '',
-                contact_name: '',
-                phone: '',
-                email: '',
-                delivery_address: '',
-                city: 'Medellín',
-                notes: '',
-            });
+            setForm(EMPTY_FORM);
             fetchClients();
         } catch (err: any) {
             toast.error('Error guardando cliente: ' + (err.message || 'Error'));
@@ -122,16 +135,7 @@ export default function ClientsPanel() {
                 <button
                     onClick={() => {
                         setEditingClient(null);
-                        setForm({
-                            business_name: '',
-                            nit_rut: '',
-                            contact_name: '',
-                            phone: '',
-                            email: '',
-                            delivery_address: '',
-                            city: 'Medellín',
-                            notes: '',
-                        });
+                        setForm(EMPTY_FORM);
                         setShowModal(true);
                     }}
                     className="flex items-center gap-2 rounded-md bg-[#3F8346] px-5 py-2.5 text-sm font-semibold text-[#FDFDFD] transition-colors hover:bg-[#2d6332]"
@@ -192,6 +196,9 @@ export default function ClientsPanel() {
                                                 delivery_address: client.delivery_address,
                                                 city: client.city || 'Medellín',
                                                 notes: client.notes || '',
+                                                payment_terms_days: String(client.payment_terms_days ?? 0),
+                                                credit_limit:
+                                                    client.credit_limit == null ? '' : String(Number(client.credit_limit)),
                                             });
                                             setShowModal(true);
                                         }}
@@ -224,6 +231,22 @@ export default function ClientsPanel() {
                                 <div className="flex items-start gap-2">
                                     <MapPin className="h-3.5 w-3.5 shrink-0 text-[#949E97]" />
                                     <span className="truncate">{client.delivery_address}</span>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-1.5 border-t border-[#C8CDC9]/60 pt-2">
+                                    <span
+                                        className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                                            Number(client.payment_terms_days) > 0
+                                                ? 'bg-blue-50 text-blue-700'
+                                                : 'bg-gray-100 text-gray-700'
+                                        }`}
+                                    >
+                                        {termsLabel(Number(client.payment_terms_days || 0))}
+                                    </span>
+                                    {client.credit_limit != null && (
+                                        <span className="rounded-full bg-[#3F8346]/10 px-2 py-0.5 text-[11px] font-semibold text-[#3F8346]">
+                                            Cupo ${Number(client.credit_limit).toLocaleString('es-CO')}
+                                        </span>
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -331,6 +354,58 @@ export default function ClientsPanel() {
                                         onChange={(e) => setForm({ ...form, city: e.target.value })}
                                         className="mt-1 w-full rounded-md border border-[#C8CDC9] px-3 py-1.5 text-sm focus:border-[#3F8346] focus:outline-none"
                                     />
+                                </div>
+                            </div>
+
+                            <div className="rounded-md border border-[#C8CDC9] bg-slate-50/60 p-3">
+                                <div className="mb-2 text-xs font-bold text-[#2E4040]">Condiciones de pago</div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-[#2E4040]">
+                                            Plazo pactado (días)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            step="1"
+                                            value={form.payment_terms_days}
+                                            onChange={(e) => setForm({ ...form, payment_terms_days: e.target.value })}
+                                            className="mt-1 w-full rounded-md border border-[#C8CDC9] px-3 py-1.5 text-sm focus:border-[#3F8346] focus:outline-none"
+                                        />
+                                        <div className="mt-1 flex flex-wrap gap-1">
+                                            {TERM_PRESETS.map((d) => (
+                                                <button
+                                                    key={d}
+                                                    type="button"
+                                                    onClick={() => setForm({ ...form, payment_terms_days: String(d) })}
+                                                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                                        Number(form.payment_terms_days) === d
+                                                            ? 'bg-[#2E4040] text-white'
+                                                            : 'bg-white text-[#2E4040] border border-[#C8CDC9]'
+                                                    }`}
+                                                >
+                                                    {d === 0 ? 'Contado' : `${d}d`}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-[#2E4040]">
+                                            Cupo de crédito ($)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            step="1"
+                                            value={form.credit_limit}
+                                            onChange={(e) => setForm({ ...form, credit_limit: e.target.value })}
+                                            placeholder="Sin límite"
+                                            className="mt-1 w-full rounded-md border border-[#C8CDC9] px-3 py-1.5 text-sm focus:border-[#3F8346] focus:outline-none"
+                                        />
+                                        <p className="mt-1 text-[10px] text-[#949E97]">
+                                            Al crear pedidos se avisa si el saldo pendiente lo supera.
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
 

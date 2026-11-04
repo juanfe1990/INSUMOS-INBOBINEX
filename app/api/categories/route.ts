@@ -1,56 +1,60 @@
-import { db, isFirebaseConfigured } from '@/lib/firebase-admin';
+import { createClient } from '@/lib/supabase/server';
+import { CATEGORIES } from '@/lib/types';
+import { slugify } from '@/lib/slugify';
 import { NextRequest, NextResponse } from 'next/server';
 
-export async function GET() {
-    if (!isFirebaseConfigured || !db)
-        return NextResponse.json({ error: 'Firebase no configurado' }, { status: 503 });
-
-    try {
-        const snapshot = await db.collection('categories').orderBy('createdAt', 'desc').get();
-        const categories = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-
-        return NextResponse.json(categories, { status: 200 });
-    } catch (error) {
-        console.error('Error fetching categories:', error);
-        return NextResponse.json({ error: 'Error al obtener categorías' }, { status: 500 });
-    }
+function errorResponse(error: { message?: string; code?: string } | null, fallback: string) {
+    const message =
+        error?.code === '23505'
+            ? 'Ya existe una categoría con ese nombre'
+            : error?.message || fallback;
+    return NextResponse.json({ error: message }, { status: 400 });
 }
 
+export async function GET() {
+    const supabase = await createClient();
+    const { data, error } = await supabase
+        .from('categories')
+        .select('*')
+        .order('name', { ascending: true });
+
+    if (error) return errorResponse(error, 'Error al obtener categorías');
+    return NextResponse.json(data ?? [], { status: 200 });
+}
+
+/**
+ * POST { name, description }  -> crea una categoría
+ * POST { seed: true }         -> carga las categorías predeterminadas (solo si no existen)
+ */
 export async function POST(request: NextRequest) {
-    if (!isFirebaseConfigured || !db)
-        return NextResponse.json({ error: 'Firebase no configurado' }, { status: 503 });
+    const supabase = await createClient();
+    const body = await request.json().catch(() => ({}));
 
-    try {
-        const body = await request.json();
-        const { name, description } = body;
-
-        if (!name) {
-            return NextResponse.json(
-                { error: 'El nombre de la categoría es obligatorio' },
-                { status: 400 },
-            );
-        }
-
-        // Opcional: Crear un "slug" para URLs amigables (ej: "Cajas de Cartón" -> "cajas-de-carton")
-        const slug = name
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/(^-|-$)+/g, '');
-
-        const docRef = await db.collection('categories').add({
-            name,
-            slug,
-            description: description || '',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        });
-
-        return NextResponse.json(
-            { id: docRef.id, message: 'Categoría creada exitosamente' },
-            { status: 201 },
-        );
-    } catch (error) {
-        console.error('Error creating category:', error);
-        return NextResponse.json({ error: 'Error al crear la categoría' }, { status: 500 });
+    if (body?.seed === true) {
+        const defaults = CATEGORIES.map((c) => ({
+            name: c.name,
+            slug: c.slug,
+            description: `Categoría de ${c.name}`,
+        }));
+        const { data, error } = await supabase
+            .from('categories')
+            .upsert(defaults, { onConflict: 'slug', ignoreDuplicates: true })
+            .select();
+        if (error) return errorResponse(error, 'No se pudieron cargar las categorías predeterminadas');
+        return NextResponse.json({ data, message: 'Categorías predeterminadas cargadas' }, { status: 201 });
     }
+
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (!name) {
+        return NextResponse.json({ error: 'El nombre de la categoría es obligatorio' }, { status: 400 });
+    }
+
+    const { data, error } = await supabase
+        .from('categories')
+        .insert([{ name, slug: slugify(name), description: body.description?.trim() || null }])
+        .select()
+        .single();
+
+    if (error) return errorResponse(error, 'Error al crear la categoría');
+    return NextResponse.json({ id: data.id, data, message: 'Categoría creada exitosamente' }, { status: 201 });
 }

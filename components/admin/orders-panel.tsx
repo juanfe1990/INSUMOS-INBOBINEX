@@ -1,8 +1,24 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import type { Order, OrderPriority, OrderStatus, Client, CoreSpecification } from '@/lib/types';
+import type {
+    Order,
+    OrderPriority,
+    OrderStatus,
+    Client,
+    CoreSpecification,
+    CoreMaterial,
+    InventoryCategory,
+    InventoryItem,
+    RawMaterial,
+} from '@/lib/types';
+import OrderProductsEditor, {
+    analyzeLines,
+    type InventoryCatalog,
+    type ProductLine,
+} from '@/components/admin/orders/order-products-editor';
+import { useConfirm } from '@/components/admin/confirm-dialog';
 import {
     Clock,
     AlertCircle,
@@ -14,6 +30,11 @@ import {
     RotateCw,
     X,
     Filter,
+    Trash2,
+    Weight,
+    Factory,
+    Package,
+    Receipt,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -37,10 +58,10 @@ const PRIORITY_CONFIG: Record<OrderPriority, { label: string; bg: string; text: 
 type NumericDraft = number | '';
 
 type OrderItemDraft = {
-    notes: string;
+    raw_material_id: string;
+    core_id: string;
     quantity: NumericDraft;
-    custom_length_cm: NumericDraft;
-    caliber_microns: NumericDraft;
+    /** Peso total por rollo (g) = peso del core + película */
     weight_grams: NumericDraft;
     unit_price: NumericDraft;
 };
@@ -58,6 +79,46 @@ function toNumber(value: NumericDraft, fallback = 0): number {
 
 function isPositiveNumber(value: NumericDraft, min = 0.01): boolean {
     return value !== '' && Number.isFinite(value) && value >= min;
+}
+
+/** IVA general en Colombia; los precios del pedido se digitan antes de IVA */
+const VAT_RATE = 0.19;
+const formatCOP = (n: number) => '$' + Math.round(Number(n) || 0).toLocaleString('es-CO');
+
+const formatKg = (kg: number) => kg.toLocaleString('es-CO', { maximumFractionDigits: 2 });
+const formatG = (g: number) => g.toLocaleString('es-CO', { maximumFractionDigits: 1 });
+const capitalize = (t: string) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
+
+/** Descripción corta de una bobina madre: "Transparente · 50 cm · 17 µ" */
+function describeRaw(m: RawMaterial) {
+    return `${capitalize(m.color || 'transparente')} · ${Number(m.width_cm)} cm · ${Number(m.caliber_microns)} µ`;
+}
+
+/**
+ * Cálculo del rollo: el peso digitado es el TOTAL por rollo (core + película).
+ * Película por rollo = peso total - peso del core. Kg a descontar = película * cantidad / 1000.
+ */
+function computeRoll(
+    raw: RawMaterial | null,
+    core: CoreSpecification | null,
+    quantity: number,
+    totalWeightGrams: number
+) {
+    const coreWeight = Number(core?.weight_grams || 0);
+    const filmPerRoll = totalWeightGrams - coreWeight;
+    const filmKgTotal = (Math.max(filmPerRoll, 0) * quantity) / 1000;
+    const availableKg = Number(raw?.current_stock_kg || 0);
+    const availableCores = Number(core?.current_stock_units || 0);
+    return {
+        coreWeight,
+        filmPerRoll,
+        filmKgTotal,
+        availableKg,
+        availableCores,
+        weightOk: totalWeightGrams > coreWeight,
+        kgOk: filmKgTotal <= availableKg,
+        coresOk: quantity <= availableCores,
+    };
 }
 
 export default function OrdersPanel() {
@@ -79,37 +140,67 @@ export default function OrdersPanel() {
     const [notes, setNotes] = useState('');
 
     const [cores, setCores] = useState<CoreSpecification[]>([]);
+    const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([]);
+    const [coreMaterials, setCoreMaterials] = useState<CoreMaterial[]>([]);
+    const [invItems, setInvItems] = useState<InventoryItem[]>([]);
+    const [invCategories, setInvCategories] = useState<InventoryCategory[]>([]);
+    // Stretch fabricado (máximo 1 medida) y productos de bodega
+    const [includeStretch, setIncludeStretch] = useState(true);
+    const [productLines, setProductLines] = useState<ProductLine[]>([]);
+    // Facturación: IVA opcional y plazo de pago (por defecto el pactado con el cliente)
+    const [applyVat, setApplyVat] = useState(true);
+    const [paymentTerms, setPaymentTerms] = useState('0');
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [confirmDialog, confirm] = useConfirm();
 
     // Medida única del pedido a fabricar
     const [item, setItem] = useState<OrderItemDraft>({
-        notes: "Vinipel Stretch Transparente",
+        raw_material_id: '',
+        core_id: '',
         quantity: 10,
-        custom_length_cm: 50,
-        caliber_microns: 17,
         weight_grams: 1500,
         unit_price: 25000,
     });
 
-    const updateItemField = (field: keyof Omit<OrderItemDraft, 'notes'>, raw: string) => {
+    const updateItemField = (field: 'quantity' | 'weight_grams' | 'unit_price', raw: string) => {
         setItem((prev) => ({
             ...prev,
             [field]: parseNumericDraft(raw),
         }));
     };
 
+    const coresForWidth = (widthCm: number) =>
+        cores.filter((c) => Number(c.length_cm) === Number(widthCm));
+
+    // Al elegir la bobina, el core se filtra por su ancho y se preselecciona el primero
+    const handleRawChange = (rawId: string) => {
+        const raw = rawMaterials.find((m) => m.id === rawId);
+        const firstCore = raw ? coresForWidth(raw.width_cm)[0] : undefined;
+        setItem((prev) => ({ ...prev, raw_material_id: rawId, core_id: firstCore?.id || '' }));
+    };
+
     // Cargar datos iniciales
     const fetchData = async () => {
         try {
             setLoading(true);
-            const [ordersRes, clientsRes, coresRes] = await Promise.all([
+            const [ordersRes, clientsRes, coresRes, rawRes, coreMatRes, itemsRes, catRes] = await Promise.all([
                 supabase
                     .from('orders')
-                    .select('*, client:clients(*), items:order_items(*)')
+                    .select('*, client:clients(*), items:order_items(*), products:order_products(*)')
                     .order('priority', { ascending: false })
                     .order('delivery_date', { ascending: true }),
                 supabase.from('clients').select('*').order('business_name'),
                 supabase.from('core_specifications').select('*').order('length_cm', { ascending: true }),
+                supabase.from('raw_materials').select('*').order('width_cm', { ascending: true }),
+                supabase.from('core_materials').select('*'),
+                supabase.from('inventory_items').select('*').order('name'),
+                supabase.from('inventory_categories').select('*').order('display_order').order('name'),
             ]);
+
+            if (rawRes.data) setRawMaterials(rawRes.data as RawMaterial[]);
+            if (coreMatRes.data) setCoreMaterials(coreMatRes.data as CoreMaterial[]);
+            if (itemsRes.data) setInvItems(itemsRes.data as InventoryItem[]);
+            if (catRes.data) setInvCategories(catRes.data as InventoryCategory[]);
 
             if (ordersRes.data) {
                 setOrders(ordersRes.data as unknown as Order[]);
@@ -117,13 +208,8 @@ export default function OrdersPanel() {
             if (clientsRes.data) {
                 setClients(clientsRes.data as Client[]);
             }
-            if (coresRes.data && coresRes.data.length > 0) {
-                const fetchedCores = coresRes.data as CoreSpecification[];
-                setCores(fetchedCores);
-                setItem((prev) => ({
-                    ...prev,
-                    custom_length_cm: prev.custom_length_cm || fetchedCores[0].length_cm,
-                }));
+            if (coresRes.data) {
+                setCores(coresRes.data as CoreSpecification[]);
             }
         } catch (err: any) {
             toast.error('Error cargando pedidos: ' + (err.message || 'Error'));
@@ -152,6 +238,20 @@ export default function OrdersPanel() {
                     fetchData();
                 }
             )
+            .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'raw_materials' },
+                () => {
+                    fetchData();
+                }
+            )
+            .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'inventory_items' },
+                () => {
+                    fetchData();
+                }
+            )
             .subscribe();
 
         return () => {
@@ -159,121 +259,159 @@ export default function OrdersPanel() {
         };
     }, []);
 
+    // Catálogo de inventario para las líneas de productos
+    const catalog: InventoryCatalog = useMemo(
+        () => ({ items: invItems, categories: invCategories, rawMaterials, cores, coreMaterials }),
+        [invItems, invCategories, rawMaterials, cores, coreMaterials]
+    );
+
+    // Lo que el stretch ya consume de bobina/cores, para validar el stock combinado con los productos
+    const stretchReserved = useMemo(() => {
+        const r: Record<string, number> = {};
+        if (!includeStretch) return r;
+        const raw = rawMaterials.find((m) => m.id === item.raw_material_id);
+        const core = cores.find((c) => c.id === item.core_id);
+        const qty = toNumber(item.quantity);
+        if (raw && core) {
+            const film = (Math.max(toNumber(item.weight_grams) - Number(core.weight_grams || 0), 0) * qty) / 1000;
+            r[`bobina:${raw.id}`] = film;
+            r[`core:${core.id}`] = qty;
+        }
+        return r;
+    }, [includeStretch, item, rawMaterials, cores]);
+
+    const productAnalysis = useMemo(
+        () => analyzeLines(productLines, catalog, stretchReserved),
+        [productLines, catalog, stretchReserved]
+    );
+
+    // Mantener una bobina con stock y un core compatible seleccionados
+    useEffect(() => {
+        setItem((prev) => {
+            const withStock = rawMaterials.filter((m) => Number(m.current_stock_kg) > 0);
+            const raw =
+                rawMaterials.find((m) => m.id === prev.raw_material_id && Number(m.current_stock_kg) > 0) ||
+                withStock[0];
+            const compatible = raw ? coresForWidth(raw.width_cm) : [];
+            const core = compatible.find((c) => c.id === prev.core_id) || compatible[0];
+            const next = { ...prev, raw_material_id: raw?.id || '', core_id: core?.id || '' };
+            return next.raw_material_id === prev.raw_material_id && next.core_id === prev.core_id ? prev : next;
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [rawMaterials, cores]);
+
     // Actualizar dirección al seleccionar cliente
     const handleClientChange = (clientId: string) => {
         setSelectedClientId(clientId);
         const cli = clients.find((c) => c.id === clientId);
         if (cli) {
             setDeliveryAddress(cli.delivery_address);
+            setPaymentTerms(String(cli.payment_terms_days ?? 0));
         }
     };
 
-    // Enviar formulario de creación de pedido (Medida única)
+    // Enviar formulario: stretch (medida única, opcional) + productos de bodega, en una sola RPC atómica
     const handleCreateOrder = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!selectedClientId) {
             toast.error('Selecciona un cliente');
             return;
         }
-
-        const quantity = toNumber(item.quantity);
-        const unitPrice = toNumber(item.unit_price);
-        const customLengthCm = toNumber(item.custom_length_cm);
-        const caliberMicrons = toNumber(item.caliber_microns);
-        const weightGrams = toNumber(item.weight_grams);
-
-        if (
-            !isPositiveNumber(item.quantity, 1) ||
-            !isPositiveNumber(item.unit_price, 1) ||
-            !isPositiveNumber(item.custom_length_cm, 1) ||
-            !isPositiveNumber(item.caliber_microns, 1) ||
-            !isPositiveNumber(item.weight_grams, 1)
-        ) {
-            toast.error('Completa todos los campos con valores mayores a 0');
+        if (!includeStretch && productLines.length === 0) {
+            toast.error('Incluye el stretch a fabricar o agrega al menos un producto');
             return;
         }
 
-        // CONDICIONAL: Validación estricta de stock de cores disponibles
-        const selectedCore = cores.find((c) => c.length_cm === customLengthCm);
-        if (selectedCore && quantity > selectedCore.current_stock_units) {
-            toast.error(
-                `No se puede crear el pedido: No hay suficientes cores de ${selectedCore.length_cm} cm en inventario. Disponibles: ${selectedCore.current_stock_units}, solicitados: ${quantity}. No se puede consumir más de lo disponible.`
-            );
+        const quantity = toNumber(item.quantity);
+        const unitPrice = toNumber(item.unit_price);
+        const weightGrams = toNumber(item.weight_grams);
+        const raw = rawMaterials.find((m) => m.id === item.raw_material_id) || null;
+        const core = cores.find((c) => c.id === item.core_id) || null;
+
+        if (includeStretch) {
+            if (!raw) {
+                toast.error('Selecciona la bobina madre (tipo de stretch) a usar');
+                return;
+            }
+            if (!core || Number(core.length_cm) !== Number(raw.width_cm)) {
+                toast.error(`Selecciona un core de ${Number(raw.width_cm)} cm compatible con la bobina`);
+                return;
+            }
+            if (
+                !isPositiveNumber(item.quantity, 1) ||
+                !isPositiveNumber(item.unit_price, 1) ||
+                !isPositiveNumber(item.weight_grams, 1)
+            ) {
+                toast.error('Completa cantidad, precio y peso del stretch con valores mayores a 0');
+                return;
+            }
+            const r = computeRoll(raw, core, quantity, weightGrams);
+            if (!r.weightOk) {
+                toast.error(
+                    `El peso por rollo (${formatG(weightGrams)} g) debe ser mayor al peso del core (${formatG(r.coreWeight)} g).`
+                );
+                return;
+            }
+            if (!r.coresOk) {
+                toast.error(
+                    `No hay suficientes cores de ${Number(core.length_cm)} cm: disponibles ${r.availableCores}, solicitados ${quantity}.`
+                );
+                return;
+            }
+            if (!r.kgOk) {
+                toast.error(
+                    `Película insuficiente en "${raw.name}": se requieren ${formatKg(r.filmKgTotal)} kg y hay ${formatKg(r.availableKg)} kg.`
+                );
+                return;
+            }
+        }
+        if (productAnalysis.firstError) {
+            toast.error(productAnalysis.firstError);
             return;
         }
 
         try {
             setSaving(true);
-            const { data: userData } = await supabase.auth.getUser();
-            if (!userData.user) throw new Error('No hay sesión activa');
+            const { data, error } = await supabase.rpc('create_order', {
+                p_order: {
+                    client_id: selectedClientId,
+                    priority,
+                    delivery_date: deliveryDate,
+                    delivery_address: deliveryAddress,
+                    notes,
+                    apply_vat: applyVat,
+                    payment_terms_days: Math.max(0, Math.floor(Number(paymentTerms) || 0)),
+                },
+                p_stretch:
+                    includeStretch && raw && core
+                        ? {
+                              raw_material_id: raw.id,
+                              core_id: core.id,
+                              quantity,
+                              weight_grams: weightGrams,
+                              unit_price: unitPrice,
+                          }
+                        : null,
+                p_products: productLines.map((l) => ({
+                    kind: l.kind,
+                    ref_id: l.ref_id,
+                    quantity: Number(l.quantity),
+                    unit_price: Number(l.unit_price),
+                })),
+            });
+            if (error) throw error;
 
-            const totalAmount = quantity * unitPrice;
-
-            // 1. Insertar Cabecera de Orden
-            const { data: orderData, error: orderError } = await supabase
-                .from('orders')
-                .insert([
-                    {
-                        client_id: selectedClientId,
-                        created_by: userData.user.id,
-                        priority,
-                        status: 'en_cola', // Se envía directamente a la cola para planta
-                        delivery_date: deliveryDate,
-                        delivery_address: deliveryAddress,
-                        notes: notes || null,
-                        total_amount: totalAmount,
-                    },
-                ])
-                .select()
-                .single();
-
-            if (orderError || !orderData) throw orderError || new Error('Error creando orden');
-
-            // 2. Insertar Item único (Medida fija)
-            let productId: string | null = null;
-            const { data: existingProd } = await supabase
-                .from('products')
-                .select('id')
-                .limit(1)
-                .maybeSingle();
-
-            if (existingProd) {
-                productId = existingProd.id;
-            } else {
-                // Crear un producto base de vinipel si no existe
-                const { data: newProd } = await supabase
-                    .from('products')
-                    .insert([
-                        {
-                            name: 'Bobina Vinipel Estándar',
-                            slug: 'bobina-vinipel-estandar-' + Date.now(),
-                            film_type: 'manual',
-                        },
-                    ])
-                    .select()
-                    .single();
-                if (newProd) productId = newProd.id;
-            }
-
-            if (productId) {
-                const orderItemToInsert = {
-                    order_id: orderData.id,
-                    product_id: productId!,
-                    quantity,
-                    custom_length_cm: customLengthCm,
-                    custom_caliber_microns: caliberMicrons,
-                    weight_grams: weightGrams,
-                    unit_price: unitPrice,
-                    subtotal: totalAmount,
-                    notes: item.notes,
-                };
-
-                await supabase.from('order_items').insert([orderItemToInsert]);
-            }
-
-            toast.success(`Pedido #${orderData.order_number} registrado y enviado a planta`);
+            const res = (data || {}) as { order_number?: number; status?: string };
+            toast.success(
+                res.status === 'listo_despacho'
+                    ? `Pedido #${res.order_number} registrado: listo para despacho (inventario descontado)`
+                    : `Pedido #${res.order_number} registrado y enviado a planta`
+            );
             setShowModal(false);
             setNotes('');
+            setProductLines([]);
+            setIncludeStretch(true);
+            setApplyVat(true);
             fetchData();
         } catch (err: any) {
             toast.error('Error al registrar pedido: ' + (err.message || 'Error'));
@@ -281,8 +419,6 @@ export default function OrdersPanel() {
             setSaving(false);
         }
     };
-
-
 
     // Cambiar estado rápido
     const handleStatusChange = async (orderId: string, newStatus: OrderStatus) => {
@@ -306,18 +442,110 @@ export default function OrdersPanel() {
         }
     };
 
+    // Eliminar pedido de la base de datos (corrección de errores)
+    const handleDeleteOrder = async (order: Order) => {
+        const statusLabel = (STATUS_CONFIG[order.status] || STATUS_CONFIG.pendiente).label;
+        const inProduction = order.status === 'en_embobinado';
+        const ok = await confirm({
+            title: `¿Eliminar el pedido #${order.order_number}?`,
+            description: (
+                <>
+                    {order.client?.business_name || 'Cliente'} · Estado: <b>{statusLabel}</b>
+                    <br />
+                    Se borrará el pedido y su medida de la base de datos. También desaparecerá de la app de
+                    operarios. Esta acción no se puede deshacer.
+                    {inProduction && (
+                        <span className="mt-2 block rounded border border-amber-200 bg-amber-50 p-2 font-semibold text-amber-800">
+                            ⚠️ Este pedido está en embobinado en planta en este momento.
+                        </span>
+                    )}
+                </>
+            ),
+            confirmLabel: 'Eliminar pedido',
+        });
+        if (!ok) return;
+
+        try {
+            setDeletingId(order.id);
+            // order_items y production_logs se eliminan en cascada
+            const { data, error } = await supabase.from('orders').delete().eq('id', order.id).select('id');
+            if (error) throw error;
+            if (!data || data.length === 0) {
+                throw new Error('No tienes permiso para eliminar pedidos o el pedido ya no existe.');
+            }
+            setOrders((prev) => prev.filter((o) => o.id !== order.id));
+            toast.success(`Pedido #${order.order_number} eliminado`);
+        } catch (err: any) {
+            const msg =
+                err?.code === '23503'
+                    ? 'El pedido tiene pagos registrados en Cuentas por Cobrar. Elimina primero esos pagos o cancela el pedido.'
+                    : err?.message || 'Error';
+            toast.error('Error al eliminar pedido: ' + msg);
+        } finally {
+            setDeletingId(null);
+        }
+    };
+
     const filteredOrders = orders.filter((o) => {
         if (filterStatus === 'all') return true;
         return o.status === filterStatus;
     });
 
-    const selectedCoreForForm = cores.find((c) => c.length_cm === toNumber(item.custom_length_cm));
-    const isStockSufficient = selectedCoreForForm
-        ? toNumber(item.quantity) <= selectedCoreForForm.current_stock_units
-        : true;
+    // --- Derivados del formulario ---
+    const availableRaws = rawMaterials.filter(
+        (m) => Number(m.current_stock_kg) > 0 || m.id === item.raw_material_id
+    );
+    const selectedRaw = rawMaterials.find((m) => m.id === item.raw_material_id) || null;
+    const compatibleCores = selectedRaw ? coresForWidth(selectedRaw.width_cm) : [];
+    const selectedCore = compatibleCores.find((c) => c.id === item.core_id) || null;
+    const formQty = toNumber(item.quantity);
+    const formWeight = toNumber(item.weight_grams);
+    const roll = computeRoll(selectedRaw, selectedCore, formQty, formWeight);
+    const hasWeight = formWeight > 0;
+
+    const stretchBlock = !includeStretch
+        ? null
+        : !selectedRaw
+          ? 'Selecciona una bobina'
+          : !selectedCore
+            ? 'Sin Core Compatible'
+            : !hasWeight
+              ? 'Indica el peso por rollo'
+              : !roll.weightOk
+                ? 'Peso Menor al Core'
+                : !roll.coresOk
+                  ? 'Sin Cores Suficientes'
+                  : !roll.kgOk
+                    ? 'Sin Kilos Suficientes'
+                    : null;
+    const blockReason =
+        stretchBlock ??
+        (!includeStretch && productLines.length === 0
+            ? 'Agrega el stretch o productos'
+            : productAnalysis.firstError
+              ? 'Revisa los productos'
+              : null);
+    const canSubmit = blockReason === null;
+    const stretchSubtotal = includeStretch ? formQty * toNumber(item.unit_price) : 0;
+    const orderSubtotal = Math.round(stretchSubtotal + productAnalysis.total);
+    const orderTax = applyVat ? Math.round(orderSubtotal * VAT_RATE) : 0;
+    const orderTotal = orderSubtotal + orderTax;
+    const termsDays = Math.max(0, Math.floor(Number(paymentTerms) || 0));
+    const estimatedDue = (() => {
+        const d = new Date(deliveryDate + 'T00:00:00');
+        d.setDate(d.getDate() + termsDays);
+        return d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
+    })();
+    const selectedClient = clients.find((c) => c.id === selectedClientId) || null;
+    const clientOpenBalance = orders
+        .filter((o) => o.client_id === selectedClientId && o.status !== 'cancelado')
+        .reduce((acc, o) => acc + Math.max(Number(o.total_amount) - Number(o.paid_amount || 0), 0), 0);
+    const creditLimit = selectedClient?.credit_limit == null ? null : Number(selectedClient.credit_limit);
+    const exceedsCredit = creditLimit !== null && clientOpenBalance + orderTotal > creditLimit;
 
     return (
         <div className="space-y-6">
+            {confirmDialog}
             {/* Header */}
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -408,9 +636,10 @@ export default function OrdersPanel() {
                                     <th className="px-4 py-3">Cliente / Razón Social</th>
                                     <th className="px-4 py-3">Prioridad</th>
                                     <th className="px-4 py-3">Fecha Entrega</th>
-                                    <th className="px-4 py-3">Rollos Requeridas</th>
+                                    <th className="px-4 py-3">Contenido</th>
                                     <th className="px-4 py-3">Estado Actual</th>
                                     <th className="px-4 py-3 text-right">Acción de Planta</th>
+                                    <th className="w-10 px-2 py-3" aria-label="Eliminar"></th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-[#C8CDC9]/50">
@@ -418,6 +647,7 @@ export default function OrdersPanel() {
                                     const statusCfg = STATUS_CONFIG[order.status] || STATUS_CONFIG.pendiente;
                                     const priorityCfg = PRIORITY_CONFIG[order.priority] || PRIORITY_CONFIG.normal;
                                     const totalRolls = order.items?.reduce((s, i) => s + i.quantity, 0) || 0;
+                                    const prods = order.products || [];
 
                                     return (
                                         <tr key={order.id} className="hover:bg-slate-50/80">
@@ -453,12 +683,74 @@ export default function OrdersPanel() {
                                                 </div>
                                             </td>
                                             <td className="px-4 py-3.5">
-                                                <div className="text-xs font-semibold text-[#2E4040]">
-                                                    {totalRolls} rollos
+                                                {totalRolls > 0 && (
+                                                    <>
+                                                        <div className="flex items-center gap-1 text-xs font-semibold text-[#2E4040]">
+                                                            <Factory className="h-3 w-3 text-[#949E97]" />
+                                                            {totalRolls} rollos
+                                                        </div>
+                                                        <div className="text-[11px] text-[#949E97]">
+                                                            {order.items?.map((it) => it.notes || 'Vinipel').join(', ')}
+                                                        </div>
+                                                    </>
+                                                )}
+                                                {prods.length > 0 && (
+                                                    <div
+                                                        className={`text-[11px] text-[#2E4040] ${totalRolls > 0 ? 'mt-1' : ''}`}
+                                                        title={prods
+                                                            .map((p) => `${Number(p.quantity)} ${p.unit} ${p.description}`)
+                                                            .join('\n')}
+                                                    >
+                                                        <div className="flex items-center gap-1 font-semibold">
+                                                            <Package className="h-3 w-3 text-[#949E97]" />
+                                                            {prods.length} producto(s) de bodega
+                                                        </div>
+                                                        <div className="max-w-[220px] truncate text-[#949E97]">
+                                                            {prods
+                                                                .map((p) => `${Number(p.quantity)} ${p.unit} ${p.description}`)
+                                                                .join(' · ')}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                <div className="mt-0.5 text-[11px] font-semibold text-[#3F8346]">
+                                                    {formatCOP(Number(order.total_amount || 0))}
+                                                    <span className="ml-1 font-normal text-[#949E97]">
+                                                        {order.apply_vat ? 'con IVA' : 'sin IVA'}
+                                                    </span>
                                                 </div>
-                                                <div className="text-[11px] text-[#949E97]">
-                                                    {order.items?.map((it) => it.notes || 'Vinipel').join(', ')}
-                                                </div>
+                                                {order.status !== 'cancelado' && Number(order.total_amount) > 0 && (() => {
+                                                    const balance = Math.max(
+                                                        Number(order.total_amount) - Number(order.paid_amount || 0),
+                                                        0
+                                                    );
+                                                    if (order.payment_status === 'pagado' || balance === 0) {
+                                                        return (
+                                                            <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                                                                <Receipt className="h-3 w-3" /> Pagado
+                                                            </span>
+                                                        );
+                                                    }
+                                                    const due = order.due_date ? new Date(order.due_date + 'T00:00:00') : null;
+                                                    const today = new Date();
+                                                    today.setHours(0, 0, 0, 0);
+                                                    const overdue = due ? due < today : false;
+                                                    return (
+                                                        <span
+                                                            className={`mt-0.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                                                overdue ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'
+                                                            }`}
+                                                            title={order.due_date ? `Vence ${order.due_date}` : ''}
+                                                        >
+                                                            <Receipt className="h-3 w-3" />
+                                                            Saldo {formatCOP(balance)}
+                                                            {due &&
+                                                                ` · ${overdue ? 'vencido' : 'vence'} ${due.toLocaleDateString('es-CO', {
+                                                                    day: '2-digit',
+                                                                    month: 'short',
+                                                                })}`}
+                                                        </span>
+                                                    );
+                                                })()}
                                             </td>
                                             <td className="px-4 py-3.5">
                                                 <span
@@ -507,6 +799,21 @@ export default function OrdersPanel() {
                                                     )}
                                                 </div>
                                             </td>
+                                            <td className="px-2 py-3.5 text-right">
+                                                <button
+                                                    onClick={() => handleDeleteOrder(order)}
+                                                    disabled={deletingId === order.id}
+                                                    className="rounded-md p-1.5 text-red-500 transition hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                                                    title={`Eliminar pedido #${order.order_number}`}
+                                                    aria-label={`Eliminar pedido #${order.order_number}`}
+                                                >
+                                                    {deletingId === order.id ? (
+                                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                                    ) : (
+                                                        <Trash2 className="h-4 w-4" />
+                                                    )}
+                                                </button>
+                                            </td>
                                         </tr>
                                     );
                                 })}
@@ -523,10 +830,10 @@ export default function OrdersPanel() {
                         <div className="flex items-center justify-between border-b border-[#C8CDC9] pb-3">
                             <div>
                                 <h3 className="font-heading text-lg font-bold text-[#2E4040]">
-                                    Nueva Solicitud de Pedido (Planta)
+                                    Nueva Solicitud de Pedido
                                 </h3>
                                 <p className="text-xs text-[#949E97]">
-                                    Los operarios verán este pedido priorizado en la app móvil
+                                    Stretch a fabricar en planta (una medida) y/o productos que salen de bodega
                                 </p>
                             </div>
                             <button
@@ -611,51 +918,93 @@ export default function OrdersPanel() {
                                 </div>
                             </div>
 
-                            {/* Detalle del Rollo a Fabricar (Medida Única) */}
+                            {/* Detalle del Rollo a Fabricar (Medida Única, opcional) */}
                             <div className="rounded-lg border border-[#C8CDC9] bg-slate-50/50 p-3.5 space-y-3">
-                                <div className="flex items-center justify-between border-b border-[#C8CDC9]/60 pb-2">
+                                <div className="flex items-start justify-between gap-3 border-b border-[#C8CDC9]/60 pb-2">
                                     <div>
                                         <label className="text-xs font-bold text-[#2E4040]">
-                                            Especificación del Rollo a Fabricar
+                                            Stretch a fabricar en planta (medida única)
                                         </label>
                                         <p className="text-[11px] text-[#949E97]">
-                                            Cada orden se registra con una medida técnica para planta
+                                            La bobina define color, ancho y calibre; el core debe tener el mismo ancho
                                         </p>
                                     </div>
-                                    {selectedCoreForForm && (
-                                        <div
-                                            className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
-                                                isStockSufficient
-                                                    ? 'bg-emerald-100 text-emerald-800'
-                                                    : 'bg-red-100 text-red-700 animate-pulse'
-                                            }`}
-                                        >
-                                            Stock de Cores: {selectedCoreForForm.current_stock_units} disponibles
-                                        </div>
-                                    )}
+                                    <label className="flex shrink-0 items-center gap-1.5 text-[11px] font-semibold text-[#2E4040]">
+                                        <input
+                                            type="checkbox"
+                                            checked={includeStretch}
+                                            onChange={(e) => setIncludeStretch(e.target.checked)}
+                                            className="accent-[#3F8346]"
+                                        />
+                                        Incluir stretch
+                                    </label>
                                 </div>
 
+                                {!includeStretch ? (
+                                    <p className="text-[11px] text-[#949E97]">
+                                        Pedido sin fabricación: no pasa por planta y queda directamente &quot;Listo
+                                        Despacho&quot; al crearlo.
+                                    </p>
+                                ) : (
                                 <div className="rounded-lg border border-[#C8CDC9] bg-white p-3 shadow-sm space-y-3">
-                                    {/* Fila 1: Tipo y cantidad y precio */}
+                                    {/* Fila 1: Bobina madre en inventario */}
+                                    <div>
+                                        <label className="block text-[10px] font-semibold text-[#949E97] mb-1">Tipo de Stretch (bobina madre en bodega) *</label>
+                                        {availableRaws.length === 0 ? (
+                                            <div className="flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] font-semibold text-amber-800">
+                                                <AlertCircle className="h-4 w-4 shrink-0" />
+                                                <span>
+                                                    No hay bobinas madre con stock. Registra una compra en
+                                                    &quot;Inventarios &amp; Kardex&quot; para poder crear pedidos.
+                                                </span>
+                                            </div>
+                                        ) : (
+                                            <select
+                                                required
+                                                value={item.raw_material_id}
+                                                onChange={(e) => handleRawChange(e.target.value)}
+                                                className="w-full rounded border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none disabled:bg-gray-50 disabled:text-[#949E97]"
+                                            >
+                                                <option value="" disabled>
+                                                    Selecciona una bobina...
+                                                </option>
+                                                {availableRaws.map((m) => (
+                                                    <option key={m.id} value={m.id}>
+                                                        {m.name} — {describeRaw(m)} — {formatKg(Number(m.current_stock_kg))} kg
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        )}
+                                    </div>
+
+                                    {/* Fila 2: Core compatible, cantidad y precio */}
                                     <div className="grid grid-cols-12 items-end gap-2.5">
                                         <div className="col-span-12 sm:col-span-5">
                                             <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                Tipo de Stretch *
+                                                Core / Tubo {selectedRaw ? `de ${Number(selectedRaw.width_cm)} cm` : ''} *
                                             </label>
                                             <select
-                                                value={item.notes}
-                                                onChange={(e) => setItem({ ...item, notes: e.target.value })}
-                                                className="w-full rounded border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
+                                                required
+                                                value={item.core_id}
+                                                onChange={(e) => setItem({ ...item, core_id: e.target.value })}
+                                                disabled={!selectedRaw || compatibleCores.length === 0}
+                                                className="w-full rounded border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none disabled:bg-gray-50 disabled:text-[#949E97]"
                                             >
-                                                <option value="Vinipel Stretch Transparente">Stretch Transparente</option>
-                                                <option value="Vinipel Stretch Negro">Stretch Negro</option>
-                                                <option value="Vinipel Stretch Azul">Stretch Azul</option>
+                                                {compatibleCores.length === 0 ? (
+                                                    <option value="">
+                                                        {selectedRaw ? 'Sin cores de este ancho' : 'Elige primero la bobina'}
+                                                    </option>
+                                                ) : (
+                                                    compatibleCores.map((c) => (
+                                                        <option key={c.id} value={c.id}>
+                                                            {c.name} — {formatG(Number(c.weight_grams || 0))} g — {c.current_stock_units} und
+                                                        </option>
+                                                    ))
+                                                )}
                                             </select>
                                         </div>
                                         <div className="col-span-6 sm:col-span-3">
-                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                Cantidad (rollos) *
-                                            </label>
+                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">Cantidad (rollos) *</label>
                                             <input
                                                 type="number"
                                                 required
@@ -664,16 +1013,14 @@ export default function OrdersPanel() {
                                                 value={item.quantity}
                                                 onChange={(e) => updateItemField('quantity', e.target.value)}
                                                 className={`w-full rounded border px-2.5 py-1.5 text-xs focus:outline-none ${
-                                                    !isStockSufficient && toNumber(item.quantity) > 0
-                                                        ? 'border-red-500 bg-red-50/50 text-red-900 font-bold'
+                                                    selectedCore && !roll.coresOk
+                                                        ? 'border-red-500 bg-red-50/50 font-bold text-red-900'
                                                         : 'border-[#C8CDC9] focus:border-[#3F8346]'
                                                 }`}
                                             />
                                         </div>
                                         <div className="col-span-6 sm:col-span-4">
-                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                Precio Unit. ($) *
-                                            </label>
+                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">Precio Unit. ($) *</label>
                                             <input
                                                 type="number"
                                                 required
@@ -686,45 +1033,10 @@ export default function OrdersPanel() {
                                         </div>
                                     </div>
 
-                                    {/* Fila 2: Ancho (Desplegable BD de cores), Calibre y Peso */}
-                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                                    {/* Fila 3: Peso total por rollo + datos derivados */}
+                                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
                                         <div>
-                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                Ancho / Medida (cm) *
-                                            </label>
-                                            <select
-                                                required
-                                                value={item.custom_length_cm}
-                                                onChange={(e) => updateItemField('custom_length_cm', e.target.value)}
-                                                className="w-full rounded border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
-                                            >
-                                                <option value="">Selecciona una medida</option>
-                                                {cores.map((c) => (
-                                                    <option key={c.id} value={c.length_cm}>
-                                                        {c.length_cm} cm — {c.name} ({c.current_stock_units} cores)
-                                                    </option>
-                                                ))}
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                Calibre (micras) *
-                                            </label>
-                                            <input
-                                                type="number"
-                                                required
-                                                min="1"
-                                                step="1"
-                                                value={item.caliber_microns}
-                                                onChange={(e) => updateItemField('caliber_microns', e.target.value)}
-                                                placeholder="Ej: 17µ"
-                                                className="w-full rounded border border-[#C8CDC9] px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                Peso (gramos) *
-                                            </label>
+                                            <label className="block text-[10px] font-semibold text-[#949E97] mb-1">Peso total por rollo (g) *</label>
                                             <input
                                                 type="number"
                                                 required
@@ -732,33 +1044,211 @@ export default function OrdersPanel() {
                                                 step="1"
                                                 value={item.weight_grams}
                                                 onChange={(e) => updateItemField('weight_grams', e.target.value)}
-                                                placeholder="Ej: 1500g"
-                                                className="w-full rounded border border-[#C8CDC9] px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
+                                                placeholder="Core + película. Ej: 1500"
+                                                className={`w-full rounded border px-2.5 py-1.5 text-xs focus:outline-none ${
+                                                    selectedCore && hasWeight && !roll.weightOk
+                                                        ? 'border-red-500 bg-red-50/50 font-bold text-red-900'
+                                                        : 'border-[#C8CDC9] focus:border-[#3F8346]'
+                                                }`}
                                             />
+                                        </div>
+                                        <div>
+                                            <span className="block text-[10px] font-semibold text-[#949E97] mb-1">Calibre (de la bobina)</span>
+                                            <div className="rounded border border-dashed border-[#C8CDC9] bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-[#2E4040]">
+                                                {selectedRaw ? `${Number(selectedRaw.caliber_microns)} µ` : '—'}
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <span className="block text-[10px] font-semibold text-[#949E97] mb-1">Peso del core</span>
+                                            <div className="rounded border border-dashed border-[#C8CDC9] bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-[#2E4040]">
+                                                {selectedCore ? `${formatG(roll.coreWeight)} g` : '—'}
+                                            </div>
                                         </div>
                                     </div>
 
-                                    {/* Alerta / Feedback de Cores e Inventario */}
-                                    {selectedCoreForForm && (
-                                        <div className="pt-1">
-                                            {!isStockSufficient ? (
-                                                <div className="flex items-center gap-1.5 rounded-md bg-red-50 p-2 text-[11px] font-semibold text-red-700 border border-red-200">
-                                                    <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                                    {/* Desglose de consumo y validaciones */}
+                                    {selectedRaw && !selectedCore && (
+                                        <div className="flex items-center gap-1.5 rounded-md border border-red-200 bg-red-50 p-2 text-[11px] font-semibold text-red-700">
+                                            <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                                            <span>
+                                                No hay cores de {Number(selectedRaw.width_cm)} cm registrados. Crea la medida en
+                                                &quot;Inventarios &amp; Kardex → Cores&quot;.
+                                            </span>
+                                        </div>
+                                    )}
+
+                                    {selectedRaw && selectedCore && hasWeight && (
+                                        <div className="space-y-1.5 rounded-md border border-[#C8CDC9]/70 bg-[#F8F9FA] p-2.5 text-[11px]">
+                                            {roll.coreWeight === 0 && (
+                                                <div className="flex items-center gap-1.5 font-semibold text-amber-700">
+                                                    <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                                                     <span>
-                                                        ⚠️ No hay suficientes cores: solicitas {toNumber(item.quantity)} unidades y solo hay {selectedCoreForForm.current_stock_units} cores de {selectedCoreForForm.length_cm} cm en inventario.
-                                                    </span>
-                                                </div>
-                                            ) : (
-                                                <div className="flex items-center gap-1.5 text-[11px] text-[#3F8346]">
-                                                    <CheckCircle2 className="h-3.5 w-3.5 text-[#3F8346]" />
-                                                    <span>
-                                                        Cores suficientes disponibles en planta ({selectedCoreForForm.current_stock_units} unidades).
+                                                        El core &quot;{selectedCore.name}&quot; no tiene peso promedio definido (se
+                                                        toma 0 g). Edítalo en Inventarios → Cores.
                                                     </span>
                                                 </div>
                                             )}
+
+                                            {!roll.weightOk ? (
+                                                <div className="flex items-center gap-1.5 font-semibold text-red-700">
+                                                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-600" />
+                                                    <span>
+                                                        El peso por rollo ({formatG(formWeight)} g) debe ser mayor al peso del
+                                                        core ({formatG(roll.coreWeight)} g).
+                                                    </span>
+                                                </div>
+                                            ) : (
+                                                <div className="flex flex-wrap items-center gap-x-1.5 text-[#2E4040]">
+                                                    <Weight className="h-3.5 w-3.5 text-[#949E97]" />
+                                                    <span>Por rollo:</span>
+                                                    <b>{formatG(roll.coreWeight)} g core</b>
+                                                    <span>+</span>
+                                                    <b>{formatG(roll.filmPerRoll)} g película</b>
+                                                    <span>=</span>
+                                                    <b>{formatG(formWeight)} g</b>
+                                                </div>
+                                            )}
+
+                                            {roll.weightOk && (
+                                                <div
+                                                    className={`flex items-center gap-1.5 ${
+                                                        roll.kgOk ? 'text-[#3F8346]' : 'rounded border border-orange-200 bg-orange-50 p-1.5 font-semibold text-orange-800'
+                                                    }`}
+                                                >
+                                                    {roll.kgOk ? (
+                                                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                                                    ) : (
+                                                        <AlertCircle className="h-3.5 w-3.5 shrink-0 text-orange-600" />
+                                                    )}
+                                                    <span>
+                                                        Película a descontar: <b>{formatKg(roll.filmKgTotal)} kg</b> de{' '}
+                                                        {formatKg(roll.availableKg)} kg disponibles en &quot;{selectedRaw.name}&quot;
+                                                        {!roll.kgOk && ' — kilos insuficientes'}
+                                                    </span>
+                                                </div>
+                                            )}
+
+                                            <div
+                                                className={`flex items-center gap-1.5 ${
+                                                    roll.coresOk ? 'text-[#3F8346]' : 'rounded border border-red-200 bg-red-50 p-1.5 font-semibold text-red-700'
+                                                }`}
+                                            >
+                                                {roll.coresOk ? (
+                                                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                                                ) : (
+                                                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-600" />
+                                                )}
+                                                <span>
+                                                    Cores a descontar: <b>{formQty}</b> de {roll.availableCores} armados
+                                                    {!roll.coresOk && ' — cores insuficientes'}
+                                                    {!roll.coresOk && selectedCore && (() => {
+                                                        const mat = coreMaterials.find((m) => m.id === selectedCore.core_material_id);
+                                                        const w = Number(selectedCore.weight_grams || 0);
+                                                        if (!mat || w <= 0) return null;
+                                                        const buildable = Math.floor((Number(mat.current_stock_kg || 0) * 1000) / w);
+                                                        const missing = formQty - roll.availableCores;
+                                                        return (
+                                                            <span className="block font-normal">
+                                                                Hay material para armar {buildable.toLocaleString('es-CO')} más
+                                                                {buildable >= missing
+                                                                    ? `: pide a planta armar ${missing} cores de ${Number(selectedCore.length_cm)} cm.`
+                                                                    : ' (no alcanza: se requiere comprar material de cores).'}
+                                                            </span>
+                                                        );
+                                                    })()}
+                                                </span>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
+                                )}
+                            </div>
+
+                            {/* Productos de inventario (bodega) */}
+                            <OrderProductsEditor
+                                lines={productLines}
+                                onChange={setProductLines}
+                                catalog={catalog}
+                                checks={productAnalysis.checks}
+                                total={productAnalysis.total}
+                            />
+
+                            {/* Facturación: IVA, plazo y total */}
+                            <div className="rounded-lg border border-[#C8CDC9] bg-white p-3.5">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div className="space-y-2">
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                type="button"
+                                                role="switch"
+                                                aria-checked={applyVat}
+                                                onClick={() => setApplyVat((v) => !v)}
+                                                className={`relative h-5 w-9 rounded-full transition ${
+                                                    applyVat ? 'bg-[#3F8346]' : 'bg-[#C8CDC9]'
+                                                }`}
+                                                title={applyVat ? 'Desactivar IVA' : 'Activar IVA'}
+                                            >
+                                                <span
+                                                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${
+                                                        applyVat ? 'left-[18px]' : 'left-0.5'
+                                                    }`}
+                                                />
+                                            </button>
+                                            <span className="text-xs font-semibold text-[#2E4040]">
+                                                {applyVat ? 'Con IVA (19%)' : 'Sin IVA'}
+                                            </span>
+                                        </div>
+                                        <p className="text-[10px] text-[#949E97]">
+                                            Los precios unitarios se digitan antes de IVA.
+                                        </p>
+                                        <div className="flex items-center gap-2">
+                                            <label className="text-[11px] font-semibold text-[#2E4040]">Plazo de pago</label>
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                step="1"
+                                                value={paymentTerms}
+                                                onChange={(e) => setPaymentTerms(e.target.value)}
+                                                className="w-16 rounded border border-[#C8CDC9] px-2 py-1 text-xs focus:border-[#3F8346] focus:outline-none"
+                                            />
+                                            <span className="text-[11px] text-[#949E97]">
+                                                días {termsDays === 0 ? '(contado)' : ''} · vence aprox. {estimatedDue}
+                                            </span>
+                                        </div>
+                                        {selectedClient && (
+                                            <p className="text-[10px] text-[#949E97]">
+                                                Pactado con el cliente:{' '}
+                                                {Number(selectedClient.payment_terms_days) > 0
+                                                    ? `${selectedClient.payment_terms_days} días`
+                                                    : 'contado'}
+                                                . El vencimiento final se cuenta desde la fecha real de despacho.
+                                            </p>
+                                        )}
+                                    </div>
+                                    <div className="min-w-[200px] space-y-0.5 text-right text-xs text-[#2E4040]">
+                                        <div className="flex justify-between gap-4">
+                                            <span className="text-[#949E97]">Subtotal</span>
+                                            <span>{formatCOP(orderSubtotal)}</span>
+                                        </div>
+                                        <div className="flex justify-between gap-4">
+                                            <span className="text-[#949E97]">IVA {applyVat ? '19%' : '(no aplica)'}</span>
+                                            <span>{formatCOP(orderTax)}</span>
+                                        </div>
+                                        <div className="flex justify-between gap-4 border-t border-[#C8CDC9] pt-1 text-base font-bold">
+                                            <span>Total</span>
+                                            <span className="text-[#3F8346]">{formatCOP(orderTotal)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                {exceedsCredit && (
+                                    <div className="mt-2 flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] font-semibold text-amber-800">
+                                        <AlertCircle className="h-4 w-4 shrink-0" />
+                                        <span>
+                                            Supera el cupo del cliente: saldo pendiente {formatCOP(clientOpenBalance)} + este pedido{' '}
+                                            {formatCOP(orderTotal)} &gt; cupo {formatCOP(creditLimit || 0)}. Puedes crearlo igual.
+                                        </span>
+                                    </div>
+                                )}
                             </div>
 
                             <div className="mt-4">
@@ -785,11 +1275,12 @@ export default function OrdersPanel() {
                                 </button>
                                 <button
                                     type="submit"
-                                    disabled={saving || !isStockSufficient}
+                                    disabled={saving || !canSubmit}
                                     className="flex items-center gap-2 rounded-md bg-[#3F8346] px-5 py-2 text-xs font-semibold text-white hover:bg-[#2d6332] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                                    {!isStockSufficient ? 'Sin Cores Suficientes' : 'Crear Pedido y Enviar a Planta'}
+                                    {blockReason ??
+                                        (includeStretch ? 'Crear Pedido y Enviar a Planta' : 'Crear Pedido (Listo Despacho)')}
                                 </button>
                             </div>
                         </form>

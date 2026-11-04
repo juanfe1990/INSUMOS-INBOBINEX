@@ -1,106 +1,61 @@
-import { db, isFirebaseConfigured } from '@/lib/firebase-admin';
+import { createClient } from '@/lib/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
+import { slugify } from '@/lib/slugify';
 
-export async function PUT(
-    request: NextRequest,
-    { params }: { params: Promise<{ id: string }> }, // Solución al error de Next.js: params es una Promesa
-) {
-    if (!isFirebaseConfigured || !db)
-        return NextResponse.json({ error: 'Firebase no configurado' }, { status: 503 });
+const NO_PERMISSION =
+    'No tienes permiso para modificar categorías (se requiere rol admin) o la categoría ya no existe.';
 
-    try {
-        const { id } = await params; // Ahora esperamos los params
-        const body = await request.json();
-        const { name, description } = body;
+export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+    const { id } = await params;
+    const body = await request.json().catch(() => ({}));
 
-        const updateData: any = {
-            updatedAt: new Date().toISOString(),
-        };
-
-        let nameChanged = false;
-
-        if (name) {
-            updateData.name = name;
-            updateData.slug = name
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, '-')
-                .replace(/(^-|-$)+/g, '');
-            nameChanged = true;
-        }
-        if (description !== undefined) updateData.description = description;
-
-        // Si el nombre de la categoría cambia, actualizamos también los productos asociados
-        if (nameChanged) {
-            const batch = db.batch();
-
-            // 1. Actualizamos la categoría
-            const categoryRef = db.collection('categories').doc(id);
-            batch.update(categoryRef, updateData);
-
-            // 2. Buscamos los productos con esta categoría y actualizamos su categoryName
-            const productsSnapshot = await db
-                .collection('products')
-                .where('categoryId', '==', id)
-                .get();
-            productsSnapshot.forEach((doc) => {
-                batch.update(doc.ref, { categoryName: name });
-            });
-
-            // Ejecutamos todos los cambios juntos
-            await batch.commit();
-        } else {
-            // Si solo cambió la descripción, no hace falta actualizar productos
-            await db.collection('categories').doc(id).update(updateData);
-        }
-
-        return NextResponse.json({ message: 'Categoría actualizada' }, { status: 200 });
-    } catch (error) {
-        console.error('Error updating category:', error);
-        return NextResponse.json({ error: 'Error al actualizar la categoría' }, { status: 500 });
+    const updateData: { name?: string; slug?: string; description?: string | null } = {};
+    if (typeof body.name === 'string' && body.name.trim()) {
+        updateData.name = body.name.trim();
+        updateData.slug = slugify(body.name);
     }
+    if (body.description !== undefined) {
+        updateData.description = body.description?.trim() || null;
+    }
+
+    const supabase = await createClient();
+    const { data, error } = await supabase.from('categories').update(updateData).eq('id', id).select();
+
+    if (error) {
+        const msg = error.code === '23505' ? 'Ya existe una categoría con ese nombre' : error.message;
+        return NextResponse.json({ error: msg }, { status: 400 });
+    }
+    // RLS no lanza error: simplemente no afecta filas
+    if (!data || data.length === 0) {
+        return NextResponse.json({ error: NO_PERMISSION }, { status: 403 });
+    }
+    return NextResponse.json({ message: 'Categoría actualizada con éxito', data: data[0] }, { status: 200 });
 }
 
-export async function DELETE(
-    request: NextRequest,
-    { params }: { params: Promise<{ id: string }> },
-) {
-    if (!isFirebaseConfigured || !db)
-        return NextResponse.json({ error: 'Firebase no configurado' }, { status: 503 });
+export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+    const { id } = await params;
+    const supabase = await createClient();
 
-    try {
-        const { id } = await params;
-
-        const batch = db.batch();
-
-        // 1. Encontrar todos los productos que usan esta categoría
-        const productsSnapshot = await db
-            .collection('products')
-            .where('categoryId', '==', id)
-            .get();
-
-        // 2. Desvincular la categoría de esos productos
-        productsSnapshot.forEach((doc) => {
-            batch.update(doc.ref, {
-                categoryId: '', // ID vacío
-                categoryName: 'Sin categoría', // Nombre por defecto
-            });
-        });
-
-        // 3. Eliminar la categoría
-        const categoryRef = db.collection('categories').doc(id);
-        batch.delete(categoryRef);
-
-        // 4. Ejecutar el lote completo
-        await batch.commit();
-
-        return NextResponse.json(
-            {
-                message: `Categoría eliminada y ${productsSnapshot.size} productos actualizados`,
-            },
-            { status: 200 },
-        );
-    } catch (error) {
-        console.error('Error deleting category:', error);
-        return NextResponse.json({ error: 'Error al eliminar la categoría' }, { status: 500 });
+    // Desvincular productos antes de borrar (la FK products.category_id no es SET NULL en todos los entornos)
+    const { error: unlinkError } = await supabase
+        .from('products')
+        .update({ category_id: null })
+        .eq('category_id', id);
+    if (unlinkError) {
+        return NextResponse.json({ error: unlinkError.message }, { status: 400 });
     }
+
+    const { data, error } = await supabase.from('categories').delete().eq('id', id).select();
+
+    if (error) {
+        const msg =
+            error.code === '23503'
+                ? 'La categoría aún tiene productos asociados que no se pudieron desvincular.'
+                : error.message;
+        return NextResponse.json({ error: msg }, { status: 400 });
+    }
+    if (!data || data.length === 0) {
+        return NextResponse.json({ error: NO_PERMISSION }, { status: 403 });
+    }
+    return NextResponse.json({ message: 'Categoría eliminada exitosamente' }, { status: 200 });
 }
