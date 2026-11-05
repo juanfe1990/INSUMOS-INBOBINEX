@@ -443,7 +443,7 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 - [x] Validación en tiempo real del stock de cores con badge de advertencia.
 - [x] Selector de **bobina madre en bodega** (solo con stock > 0) en lugar de tipo de stretch fijo; el core se filtra por el ancho de la bobina. Sin campo de micras.
 - [x] Validación de **kilos de película** con `computeRoll()`: `((weight_grams - core.weight_grams) / 1000) * quantity <= bobina.current_stock_kg`, con desglose core + película visible en el formulario. Bloquea también si el peso del rollo no supera el peso del core.
-- [x] **Eliminación de pedidos** (botón papelera por fila, con confirmación). `order_items` y `production_logs` caen en cascada; el Kardex queda con `order_id = NULL`.
+- [x] **Eliminación de pedidos** solo en estado **En cola** (botón papelera visible solo ahí; el trigger `tr_orders_delete_only_en_cola` lo exige en la base). Pasado ese estado ya movieron producción, inventario o cartera. `order_items` y `production_logs` caen en cascada; el Kardex queda con `order_id = NULL`.
 - [x] Si falla el insert de `order_items`, se borra la orden recién creada (sin pedidos huérfanos).
 - [x] Sincronización Realtime con Supabase (`orders`, `core_specifications`, `raw_materials`).
 - [x] Filtros por estado (`en_cola`, `en_embobinado`, `listo_despacho`, `enviado`, etc.).

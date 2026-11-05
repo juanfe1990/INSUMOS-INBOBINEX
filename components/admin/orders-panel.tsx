@@ -454,9 +454,13 @@ export default function OrdersPanel() {
     };
 
     // Eliminar pedido de la base de datos (corrección de errores)
+    // Solo los pedidos "En cola" se pueden eliminar (aún no han movido inventario ni producción)
     const handleDeleteOrder = async (order: Order) => {
+        if (order.status !== 'en_cola') {
+            toast.error('Solo se pueden eliminar pedidos en estado "En cola".');
+            return;
+        }
         const statusLabel = (STATUS_CONFIG[order.status] || STATUS_CONFIG.pendiente).label;
-        const inProduction = order.status === 'en_embobinado';
         const ok = await confirm({
             title: `¿Eliminar el pedido #${order.order_number}?`,
             description: (
@@ -465,11 +469,6 @@ export default function OrdersPanel() {
                     <br />
                     Se borrará el pedido y su medida de la base de datos. También desaparecerá de la app de
                     operarios. Esta acción no se puede deshacer.
-                    {inProduction && (
-                        <span className="mt-2 block rounded border border-amber-200 bg-amber-50 p-2 font-semibold text-amber-800">
-                            ⚠️ Este pedido está en embobinado en planta en este momento.
-                        </span>
-                    )}
                 </>
             ),
             confirmLabel: 'Eliminar pedido',
@@ -815,6 +814,7 @@ export default function OrdersPanel() {
                                                 </div>
                                             </td>
                                             <td className="px-2 py-3.5 text-right">
+                                                {order.status === 'en_cola' && (
                                                 <button
                                                     onClick={() => handleDeleteOrder(order)}
                                                     disabled={deletingId === order.id}
@@ -828,6 +828,7 @@ export default function OrdersPanel() {
                                                         <Trash2 className="h-4 w-4" />
                                                     )}
                                                 </button>
+                                                )}
                                             </td>
                                         </tr>
                                     );
