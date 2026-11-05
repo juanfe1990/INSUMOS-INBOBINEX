@@ -11,8 +11,12 @@ import type {
     InventoryItem,
     InventoryTransaction,
     InventoryMovementType,
+    Supplier,
 } from '@/lib/types';
 import GeneralInventory from '@/components/admin/inventory/general-inventory';
+import FilmCutsManager from '@/components/admin/inventory/film-cuts-manager';
+import WastePanel from '@/components/admin/inventory/waste-panel';
+import InvoiceFormModal from '@/components/admin/suppliers/invoice-form-modal';
 import {
     Package,
     Layers,
@@ -27,6 +31,7 @@ import {
     SlidersHorizontal,
     DollarSign,
     Weight,
+    Recycle,
     FileSpreadsheet,
     Calendar,
     User,
@@ -64,7 +69,7 @@ const MOVEMENT_CONFIG: Record<
         isPositive: false,
     },
     merma_desperdicio: {
-        label: 'Merma / Scrap',
+        label: 'Desperdicio',
         bg: 'bg-amber-50 border-amber-200',
         text: 'text-amber-700',
         icon: ArrowDownRight,
@@ -138,7 +143,7 @@ export default function InventoryPanel() {
     const { user, profile } = useAuth();
 
     // Pestañas internas
-    const [subTab, setSubTab] = useState<'raw' | 'cores' | 'general' | 'kardex'>('raw');
+    const [subTab, setSubTab] = useState<'raw' | 'cores' | 'general' | 'waste' | 'kardex'>('raw');
     const [loading, setLoading] = useState(true);
 
     // Datos principales
@@ -154,6 +159,10 @@ export default function InventoryPanel() {
     const [kardexSearch, setKardexSearch] = useState<string>('');
 
     // Modales
+    // Compra de bobina = factura de compra (proveedor + CxP + Kardex + costo promedio)
+    const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+    const [purchaseFor, setPurchaseFor] = useState<{ rawId: string } | null>(null);
+    // Ajuste por conteo físico / inventario inicial (RPC adjust_raw_material_stock)
     const [showRawEntryModal, setShowRawEntryModal] = useState(false);
     const [selectedRawForEntry, setSelectedRawForEntry] = useState<RawMaterial | null>(null);
     const [rawEntryKg, setRawEntryKg] = useState<string>('');
@@ -206,7 +215,7 @@ export default function InventoryPanel() {
     const fetchInventoryData = async () => {
         try {
             setLoading(true);
-            const [rawRes, coresRes, matRes, catRes, itemsRes, transRes] = await Promise.all([
+            const [rawRes, coresRes, matRes, catRes, itemsRes, transRes, supRes] = await Promise.all([
                 supabase.from('raw_materials').select('*').order('width_cm', { ascending: true }),
                 supabase.from('core_specifications').select('*').order('length_cm', { ascending: true }),
                 supabase.from('core_materials').select('*').order('created_at', { ascending: true }),
@@ -228,7 +237,9 @@ export default function InventoryPanel() {
                     `)
                     .order('created_at', { ascending: false })
                     .limit(100),
+                supabase.from('suppliers').select('*').order('business_name'),
             ]);
+            if (supRes.data) setSuppliers(supRes.data as Supplier[]);
 
             if (rawRes.data) setRawMaterials(rawRes.data as RawMaterial[]);
             if (coresRes.data) setCores(coresRes.data as CoreSpecification[]);
@@ -349,61 +360,42 @@ export default function InventoryPanel() {
         });
     }, [transactions, kardexFilterType, kardexSearch]);
 
-    // Registrar Entrada de Bobina Madre (Compra)
+    // Ajuste por conteo físico / inventario inicial de una bobina (atómico en la base)
     const handleSaveRawEntry = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!selectedRawForEntry || !rawEntryKg || Number(rawEntryKg) <= 0) {
-            toast.error('Ingresa una cantidad válida en kilos');
+        if (!selectedRawForEntry) return;
+        if (rawEntryKg === '' || Number(rawEntryKg) < 0) {
+            toast.error('Ingresa los kilos contados (0 o más)');
             return;
         }
-
+        const newKg = Number(rawEntryKg);
+        const current = Number(selectedRawForEntry.current_stock_kg || 0);
+        if (newKg === current) {
+            toast.info('El conteo coincide con el stock registrado: no hay nada que ajustar');
+            return;
+        }
         try {
             setSaving(true);
-            const kg = Number(rawEntryKg);
-            const cost = rawEntryCost ? Number(rawEntryCost) : Number(selectedRawForEntry.cost_per_kg);
-            const currentStock = Number(selectedRawForEntry.current_stock_kg);
-            const newStock = currentStock + kg;
-
-            // 1. Actualizar stock y costo en raw_materials
-            const { error: updateError } = await supabase
-                .from('raw_materials')
-                .update({
-                    current_stock_kg: newStock,
-                    cost_per_kg: cost,
-                    updated_at: new Date().toISOString(),
-                })
-                .eq('id', selectedRawForEntry.id);
-
-            if (updateError) throw updateError;
-
-            const { data: authData } = await supabase.auth.getUser();
-            const creatorId = authData?.user?.id || user?.id;
-            if (!creatorId) {
-                toast.error('Sesión de usuario requerida');
-                return;
-            }
-
-            // 2. Registrar en Kardex (inventory_transactions)
-            const { error: transError } = await supabase.from('inventory_transactions').insert({
-                movement_type: 'entrada_compra',
-                raw_material_id: selectedRawForEntry.id,
-                quantity: kg,
-                unit_cost: cost,
-                total_cost: kg * cost,
-                notes: rawEntryNotes || 'Ingreso / Compra de bobina madre',
-                created_by: creatorId,
+            const { error } = await supabase.rpc('adjust_raw_material_stock', {
+                p_raw_id: selectedRawForEntry.id,
+                p_new_stock_kg: newKg,
+                p_unit_cost: newKg > current && rawEntryCost !== '' ? Number(rawEntryCost) : undefined,
+                p_notes: rawEntryNotes.trim() || undefined,
             });
-
-            if (transError) throw transError;
-
-            toast.success(`Se ingresaron +${kg.toLocaleString()} kg a ${selectedRawForEntry.name}`);
+            if (error) throw error;
+            const diff = newKg - current;
+            toast.success(
+                `${selectedRawForEntry.name}: ${current.toLocaleString('es-CO')} → ${newKg.toLocaleString('es-CO')} kg (${
+                    diff > 0 ? '+' : ''
+                }${diff.toLocaleString('es-CO', { maximumFractionDigits: 2 })} kg en Kardex)`
+            );
             setShowRawEntryModal(false);
             setRawEntryKg('');
             setRawEntryCost('');
             setRawEntryNotes('');
             fetchInventoryData();
         } catch (err: any) {
-            toast.error('Error al registrar entrada: ' + (err.message || 'Error'));
+            toast.error('Error al ajustar: ' + (err.message || 'Error'));
         } finally {
             setSaving(false);
         }
@@ -500,6 +492,10 @@ export default function InventoryPanel() {
             return;
         }
 
+        if (findDuplicateCore(editCoreMaterialId || null, Number(editingCore.length_cm), editingCore.id)) {
+            toast.error(duplicateCoreMessage(editCoreMaterialId || null, Number(editingCore.length_cm)));
+            return;
+        }
         try {
             setSaving(true);
             const weight = Number(editCoreWeight);
@@ -522,10 +518,27 @@ export default function InventoryPanel() {
             setShowEditCoreCostModal(false);
             fetchInventoryData();
         } catch (err: any) {
-            toast.error('Error actualizando core: ' + (err.message || 'Error'));
+            toast.error(
+                err?.code === '23505'
+                    ? duplicateCoreMessage(editCoreMaterialId || null, Number(editingCore.length_cm))
+                    : 'Error actualizando core: ' + (err.message || 'Error')
+            );
         } finally {
             setSaving(false);
         }
+    };
+
+    // Una medida es única por material: 45 cm cartón y 45 cm color pueden coexistir, dos 45 cm cartón no
+    const findDuplicateCore = (materialId: string | null, length: number, exceptId?: string) =>
+        cores.find(
+            (c) =>
+                c.id !== exceptId &&
+                (c.core_material_id || null) === (materialId || null) &&
+                Math.abs(Number(c.length_cm) - length) < 0.001
+        );
+    const duplicateCoreMessage = (materialId: string | null, length: number) => {
+        const mat = coreMaterials.find((m) => m.id === materialId);
+        return `Ya existe un core de ${length} cm ${mat ? `de "${mat.name}"` : 'sin material'}. Cada medida solo puede existir una vez por material.`;
     };
 
     // Crear Nueva Medida de Core
@@ -543,6 +556,11 @@ export default function InventoryPanel() {
             toast.error('Selecciona el material de cores con el que se arma esta medida');
             return;
         }
+        const newLength = Number(newCoreLength) || 50;
+        if (findDuplicateCore(newCoreMaterialId, newLength)) {
+            toast.error(duplicateCoreMessage(newCoreMaterialId, newLength));
+            return;
+        }
         try {
             setSaving(true);
             const material = coreMaterials.find((m) => m.id === newCoreMaterialId);
@@ -550,7 +568,7 @@ export default function InventoryPanel() {
             const draft = { weight_grams: Number(newCoreWeight), labor_cost_per_unit: labor } as CoreSpecification;
             const { error } = await supabase.from('core_specifications').insert({
                 name: newCoreName.trim(),
-                length_cm: Number(newCoreLength) || 50,
+                length_cm: newLength,
                 weight_grams: Number(newCoreWeight),
                 labor_cost_per_unit: labor,
                 core_material_id: newCoreMaterialId,
@@ -567,7 +585,11 @@ export default function InventoryPanel() {
             setNewCoreLabor('');
             fetchInventoryData();
         } catch (err: any) {
-            toast.error('Error al registrar core: ' + (err.message || 'Error'));
+            toast.error(
+                err?.code === '23505'
+                    ? duplicateCoreMessage(newCoreMaterialId, newLength)
+                    : 'Error al registrar core: ' + (err.message || 'Error')
+            );
         } finally {
             setSaving(false);
         }
@@ -696,54 +718,6 @@ export default function InventoryPanel() {
         }
     };
 
-    // Ajustar / Vaciar stock de Bobina Madre a 0 kg
-    const handleResetRawStock = async (m: RawMaterial) => {
-        const currentStock = Number(m.current_stock_kg || 0);
-        if (currentStock === 0) {
-            toast.info('El stock de este material ya está en 0 kg');
-            return;
-        }
-
-        const ok = await confirm({
-            title: `¿Vaciar a 0 kg el stock de "${m.name}"?`,
-            description: `Actualmente hay ${currentStock.toLocaleString('es-CO')} kg registrados. Se creará un ajuste manual en el Kardex.`,
-            confirmLabel: 'Vaciar stock',
-        });
-        if (!ok) return;
-
-        try {
-            setSaving(true);
-            const { error: updateError } = await supabase
-                .from('raw_materials')
-                .update({ current_stock_kg: 0, updated_at: new Date().toISOString() })
-                .eq('id', m.id);
-
-            if (updateError) throw updateError;
-
-            const { data: authData } = await supabase.auth.getUser();
-            const creatorId = authData?.user?.id || user?.id;
-
-            if (creatorId) {
-                await supabase.from('inventory_transactions').insert({
-                    movement_type: 'ajuste_manual',
-                    raw_material_id: m.id,
-                    quantity: -currentStock,
-                    unit_cost: Number(m.cost_per_kg || 0),
-                    total_cost: -currentStock * Number(m.cost_per_kg || 0),
-                    notes: 'Vaciado / Reajuste de inventario a 0 kg',
-                    created_by: creatorId,
-                });
-            }
-
-            toast.success(`Stock de "${m.name}" ajustado a 0 kg`);
-            fetchInventoryData();
-        } catch (err: any) {
-            toast.error('Error al ajustar stock: ' + (err.message || 'Error'));
-        } finally {
-            setSaving(false);
-        }
-    };
-
     // Eliminar Core Registrado
     const handleDeleteCore = async (c: CoreSpecification) => {
         const ok = await confirm({
@@ -795,27 +769,12 @@ export default function InventoryPanel() {
 
         try {
             setSaving(true);
-            const { error: updateError } = await supabase
-                .from('core_specifications')
-                .update({ current_stock_units: 0, updated_at: new Date().toISOString() })
-                .eq('id', c.id);
-
-            if (updateError) throw updateError;
-
-            const { data: authData } = await supabase.auth.getUser();
-            const creatorId = authData?.user?.id || user?.id;
-
-            if (creatorId) {
-                await supabase.from('inventory_transactions').insert({
-                    movement_type: 'ajuste_manual',
-                    core_id: c.id,
-                    quantity: -currentUnits,
-                    unit_cost: Number(c.standard_cost || 0),
-                    total_cost: -currentUnits * Number(c.standard_cost || 0),
-                    notes: 'Vaciado / Reajuste manual de cores a 0 tubos',
-                    created_by: creatorId,
-                });
-            }
+            const { error } = await supabase.rpc('adjust_core_stock', {
+                p_core_id: c.id,
+                p_new_units: 0,
+                p_notes: 'Vaciado / reajuste manual de cores a 0',
+            });
+            if (error) throw error;
 
             toast.success(`Stock de "${c.name}" ajustado a 0 unidades`);
             fetchInventoryData();
@@ -828,6 +787,10 @@ export default function InventoryPanel() {
 
     // Eliminar Movimiento de Kardex
     const handleDeleteTransaction = async (t: InventoryTransaction) => {
+        if ((t as any).waste_record_id) {
+            toast.error('Este movimiento pertenece a un registro de desperdicio: anúlalo desde la pestaña "Desperdicios".');
+            return;
+        }
         const label = MOVEMENT_CONFIG[t.movement_type as InventoryMovementType]?.label || t.movement_type;
         const ok = await confirm({
             title: '¿Eliminar este movimiento del Kardex?',
@@ -893,13 +856,17 @@ export default function InventoryPanel() {
                             </button>
                             <button
                                 onClick={() => {
-                                    setSelectedRawForEntry(rawMaterials[0] || null);
-                                    setShowRawEntryModal(true);
+                                    if (rawMaterials.length === 0) {
+                                        toast.error('Crea primero la bobina madre con "Nueva Medida"');
+                                        return;
+                                    }
+                                    setPurchaseFor({ rawId: rawMaterials[0].id });
                                 }}
                                 className="flex items-center gap-2 rounded-lg bg-[#3F8346] px-4 py-2 text-xs font-semibold text-[#FDFDFD] shadow-sm transition hover:bg-[#2d6332]"
+                                title="Factura de compra: proveedor, cuenta por pagar, Kardex y costo promedio"
                             >
                                 <Plus className="h-4 w-4" />
-                                Registrar Compra / Entrada (Kg)
+                                Registrar Compra (Factura)
                             </button>
                         </>
                     )}
@@ -1075,6 +1042,17 @@ export default function InventoryPanel() {
                     )}
                 </button>
                 <button
+                    onClick={() => setSubTab('waste')}
+                    className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition ${
+                        subTab === 'waste'
+                            ? 'bg-[#2E4040] text-white shadow-sm'
+                            : 'bg-white text-[#2E4040] border border-[#C8CDC9] hover:bg-[#C8CDC9]/20'
+                    }`}
+                >
+                    <Recycle className="h-3.5 w-3.5 text-[#3F8346]" />
+                    Desperdicios
+                </button>
+                <button
                     onClick={() => setSubTab('kardex')}
                     className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition ${
                         subTab === 'kardex'
@@ -1092,6 +1070,10 @@ export default function InventoryPanel() {
             {/* ============================================================== */}
             {subTab === 'raw' && (
                 <div className="space-y-4">
+                    <FilmCutsManager
+                        rawWidths={rawMaterials.map((m) => Number(m.width_cm))}
+                        canEdit={profile?.role === 'admin'}
+                    />
                     {loading ? (
                         <div className="flex items-center justify-center py-20">
                             <Loader2 className="h-8 w-8 animate-spin text-[#3F8346]" />
@@ -1180,25 +1162,27 @@ export default function InventoryPanel() {
                                                 <td className="px-4 py-4 text-right">
                                                     <div className="flex items-center justify-end gap-1.5">
                                                         <button
-                                                            onClick={() => {
-                                                                setSelectedRawForEntry(m);
-                                                                setRawEntryCost(String(m.cost_per_kg || ''));
-                                                                setShowRawEntryModal(true);
-                                                            }}
+                                                            onClick={() => setPurchaseFor({ rawId: m.id })}
                                                             className="inline-flex items-center gap-1 rounded-md bg-[#3F8346] px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] transition"
-                                                            title="Registrar compra o entrada en kilos"
+                                                            title="Registrar factura de compra de esta bobina (proveedor + cuenta por pagar)"
                                                         >
                                                             <Plus className="h-3.5 w-3.5" />
-                                                            + Entrada
+                                                            Compra
                                                         </button>
                                                         <button
                                                             type="button"
-                                                            onClick={() => handleResetRawStock(m)}
-                                                            disabled={saving || Number(m.current_stock_kg || 0) === 0}
+                                                            onClick={() => {
+                                                                setSelectedRawForEntry(m);
+                                                                setRawEntryKg(String(Number(m.current_stock_kg || 0)));
+                                                                setRawEntryCost(String(Number(m.cost_per_kg || 0) || ''));
+                                                                setRawEntryNotes('');
+                                                                setShowRawEntryModal(true);
+                                                            }}
+                                                            disabled={saving}
                                                             className="rounded-md border border-[#C8CDC9] bg-white px-2 py-1 text-[11px] font-semibold text-gray-600 hover:bg-amber-50 hover:text-amber-700 hover:border-amber-300 transition disabled:opacity-40"
-                                                            title="Vaciar / reajustar stock a 0 kg"
+                                                            title="Ajustar por conteo físico, inventario inicial o vaciar"
                                                         >
-                                                            Vaciar
+                                                            Ajustar
                                                         </button>
                                                         <button
                                                             type="button"
@@ -1526,6 +1510,17 @@ export default function InventoryPanel() {
             {/* ============================================================== */}
             {/* SUBTAB: OTROS INVENTARIOS (cintas, cartón industrial, ...)      */}
             {/* ============================================================== */}
+            {subTab === 'waste' && (
+                <WastePanel
+                    rawMaterials={rawMaterials}
+                    cores={cores}
+                    coreMaterials={coreMaterials}
+                    invItems={invItems}
+                    isAdmin={profile?.role === 'admin'}
+                    onChanged={fetchInventoryData}
+                />
+            )}
+
             {subTab === 'general' && (
                 <GeneralInventory
                     categories={invCategories}
@@ -1683,7 +1678,11 @@ export default function InventoryPanel() {
                                         const qty = Number(t.quantity);
                                         // Los ajustes manuales guardan el signo en la cantidad
                                         const isPositive =
-                                            t.movement_type === 'ajuste_manual' ? qty >= 0 : config.isPositive;
+                                            t.movement_type === 'ajuste_manual' || t.movement_type === 'merma_desperdicio'
+                                                ? t.movement_type === 'ajuste_manual'
+                                                    ? qty >= 0
+                                                    : qty < 0
+                                                : config.isPositive;
 
                                         return (
                                             <tr key={t.id} className="hover:bg-[#F9FBFA] transition-colors">
@@ -1745,111 +1744,144 @@ export default function InventoryPanel() {
             )}
 
             {/* ============================================================== */}
-            {/* MODAL: REGISTRAR ENTRADA DE BOBINA MADRE (COMPRA)               */}
+            {/* MODAL: AJUSTE POR CONTEO / INVENTARIO INICIAL DE BOBINA         */}
             {/* ============================================================== */}
-            {showRawEntryModal && selectedRawForEntry && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-                    <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl animate-in fade-in zoom-in-95">
-                        <div className="flex items-center justify-between border-b border-[#C8CDC9] pb-3">
-                            <h3 className="font-heading text-lg font-bold text-[#2E4040]">
-                                Registrar Entrada / Compra
-                            </h3>
-                            <button
-                                onClick={() => setShowRawEntryModal(false)}
-                                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"
-                            >
-                                <X className="h-5 w-5" />
-                            </button>
-                        </div>
-
-                        <form onSubmit={handleSaveRawEntry} className="mt-4 space-y-4">
-                            <div>
-                                <label className="block text-xs font-semibold text-[#2E4040] mb-1">
-                                    Materia Prima:
-                                </label>
-                                <select
-                                    value={selectedRawForEntry.id}
-                                    onChange={(e) => {
-                                        const found = rawMaterials.find((m) => m.id === e.target.value);
-                                        if (found) {
-                                            setSelectedRawForEntry(found);
-                                            setRawEntryCost(String(found.cost_per_kg || ''));
-                                        }
-                                    }}
-                                    className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+            {showRawEntryModal && selectedRawForEntry && (() => {
+                const current = Number(selectedRawForEntry.current_stock_kg || 0);
+                const newKg = rawEntryKg === '' ? current : Number(rawEntryKg);
+                const diff = newKg - current;
+                return (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+                        <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+                            <div className="flex items-center justify-between border-b border-[#C8CDC9] pb-3">
+                                <div>
+                                    <h3 className="font-heading text-lg font-bold text-[#2E4040]">Ajustar conteo</h3>
+                                    <p className="text-[11px] text-[#949E97]">
+                                        {selectedRawForEntry.name} · {Number(selectedRawForEntry.width_cm)} cm ·{' '}
+                                        {Number(selectedRawForEntry.caliber_microns)} µ
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={() => setShowRawEntryModal(false)}
+                                    className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"
                                 >
-                                    {rawMaterials.map((m) => (
-                                        <option key={m.id} value={m.id}>
-                                            {m.name} ({m.width_cm} cm · {Number(m.caliber_microns)} µ) — Stock actual: {Number(m.current_stock_kg).toLocaleString()} kg
-                                        </option>
-                                    ))}
-                                </select>
+                                    <X className="h-5 w-5" />
+                                </button>
                             </div>
 
-                            <div>
-                                <label className="block text-xs font-semibold text-[#2E4040] mb-1">
-                                    Kilos Recibidos (Kg) *:
-                                </label>
-                                <input
-                                    type="number"
-                                    step="0.1"
-                                    required
-                                    value={rawEntryKg}
-                                    onChange={(e) => setRawEntryKg(e.target.value)}
-                                    placeholder="Ej: 500"
-                                    className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-sm font-bold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-xs font-semibold text-[#2E4040] mb-1">
-                                    Costo por Kilo ($ COP):
-                                </label>
-                                <input
-                                    type="number"
-                                    step="100"
-                                    value={rawEntryCost}
-                                    onChange={(e) => setRawEntryCost(e.target.value)}
-                                    placeholder="Ej: 9500"
-                                    className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
-                                />
-                                <span className="text-[11px] text-gray-500">
-                                    Si el precio de compra cambió, actualízalo aquí para calcular costos financieros.
+                            <div className="mt-3 flex items-start gap-1.5 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">
+                                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                <span>
+                                    Solo para conteo físico, inventario inicial o vaciar. Las <b>compras</b> se registran con
+                                    el botón <b>Compra</b> (factura del proveedor) para que queden la cuenta por pagar y el
+                                    costo real.
                                 </span>
                             </div>
 
-                            <div>
-                                <label className="block text-xs font-semibold text-[#2E4040] mb-1">
-                                    Proveedor / Factura / Notas:
-                                </label>
-                                <input
-                                    type="text"
-                                    value={rawEntryNotes}
-                                    onChange={(e) => setRawEntryNotes(e.target.value)}
-                                    placeholder="Ej: Factura 4591 - Petroquímica S.A."
-                                    className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
-                                />
-                            </div>
+                            <form onSubmit={handleSaveRawEntry} className="mt-4 space-y-4">
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <span className="block text-[10px] font-semibold text-[#949E97] mb-1">En sistema</span>
+                                        <div className="rounded border border-dashed border-[#C8CDC9] bg-slate-50 px-2.5 py-1.5 text-sm font-bold text-[#2E4040]">
+                                            {current.toLocaleString('es-CO', { maximumFractionDigits: 2 })} kg
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-semibold text-[#949E97] mb-1">Kilos contados *</label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            step="any"
+                                            required
+                                            value={rawEntryKg}
+                                            onChange={(e) => setRawEntryKg(e.target.value)}
+                                            className="w-full rounded border border-[#C8CDC9] px-2.5 py-1.5 text-sm font-bold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
+                                        />
+                                    </div>
+                                </div>
 
-                            <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#C8CDC9]">
-                                <button
-                                    type="button"
-                                    onClick={() => setShowRawEntryModal(false)}
-                                    className="rounded-lg border border-[#C8CDC9] px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
-                                >
-                                    Cancelar
-                                </button>
-                                <button
-                                    type="submit"
-                                    disabled={saving}
-                                    className="flex items-center gap-1.5 rounded-lg bg-[#3F8346] px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] disabled:opacity-50"
-                                >
-                                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Guardar en Kardex'}
-                                </button>
-                            </div>
-                        </form>
+                                {diff !== 0 && (
+                                    <p className={`text-[11px] font-semibold ${diff > 0 ? 'text-[#3F8346]' : 'text-red-700'}`}>
+                                        Ajuste en Kardex: {diff > 0 ? '+' : ''}
+                                        {diff.toLocaleString('es-CO', { maximumFractionDigits: 2 })} kg
+                                    </p>
+                                )}
+
+                                {diff > 0 && (
+                                    <div>
+                                        <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
+                                            Costo por kg de lo que entra ($)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            step="any"
+                                            value={rawEntryCost}
+                                            onChange={(e) => setRawEntryCost(e.target.value)}
+                                            className="w-full rounded border border-[#C8CDC9] px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
+                                        />
+                                        <span className="text-[10px] text-[#949E97]">
+                                            Para inventario inicial. El costo promedio se recalcula ponderado.
+                                        </span>
+                                    </div>
+                                )}
+
+                                <div>
+                                    <label className="block text-[10px] font-semibold text-[#949E97] mb-1">Motivo</label>
+                                    <input
+                                        type="text"
+                                        value={rawEntryNotes}
+                                        onChange={(e) => setRawEntryNotes(e.target.value)}
+                                        placeholder={current === 0 ? 'Inventario inicial' : 'Conteo físico'}
+                                        className="w-full rounded border border-[#C8CDC9] px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-between gap-3 border-t border-[#C8CDC9] pt-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setRawEntryKg('0')}
+                                        className="text-[11px] font-semibold text-amber-700 hover:underline"
+                                    >
+                                        Vaciar (0 kg)
+                                    </button>
+                                    <div className="flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowRawEntryModal(false)}
+                                            className="rounded-lg border border-[#C8CDC9] px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                                        >
+                                            Cancelar
+                                        </button>
+                                        <button
+                                            type="submit"
+                                            disabled={saving || diff === 0}
+                                            className="flex items-center gap-1.5 rounded-lg bg-[#3F8346] px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#2d6332] disabled:opacity-50"
+                                        >
+                                            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Guardar ajuste'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
                     </div>
-                </div>
+                );
+            })()}
+
+            {/* Compra de bobina madre = factura de compra */}
+            {purchaseFor && (
+                <InvoiceFormModal
+                    suppliers={suppliers}
+                    rawMaterials={rawMaterials}
+                    coreMaterials={coreMaterials}
+                    inventoryItems={invItems}
+                    initialLine={{ type: 'bobina', refId: purchaseFor.rawId }}
+                    onClose={() => setPurchaseFor(null)}
+                    onSaved={() => {
+                        setPurchaseFor(null);
+                        fetchInventoryData();
+                    }}
+                />
             )}
 
             {/* ============================================================== */}

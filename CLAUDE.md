@@ -112,6 +112,7 @@ c:\Users\jubla\Desktop\Inbobinex\
 - `treasury_movement_type`: `'saldo_inicial' | 'cobro_cliente' | 'pago_proveedor' | 'pago_gasto' | 'transferencia_entrada' | 'transferencia_salida' | 'otro_ingreso' | 'otro_egreso' | 'ajuste'`
 - `receivable_status`: `'pendiente' | 'parcial' | 'pagado'`
 - `purchase_item_type`: `'bobina' | 'core' | 'insumo' | 'otro'`
+- `waste_reason`: `'refile' | 'arranque' | 'rollo_defectuoso' | 'rotura' | 'core_danado' | 'dano_bodega' | 'obsoleto' | 'otro'`
 
 ### Tablas y Esquemas DDL:
 
@@ -209,7 +210,9 @@ CREATE TABLE public.order_items (
   product_id uuid NOT NULL REFERENCES public.products(id),
   quantity integer NOT NULL CHECK (quantity > 0),
   completed_quantity integer NOT NULL DEFAULT 0,
-  custom_length_cm numeric,          -- Ancho/medida (coincide con core_specifications.length_cm)
+  custom_length_cm numeric,          -- Medida del ROLLO (= core.length_cm); puede ser un corte de la bobina
+  bobina_width_cm numeric,           -- Snapshot del ancho de la bobina madre de la que se corta
+  rolls_per_pass integer,            -- Rollos por pasada (60 cm → 15 cm = 4)
   custom_caliber_microns numeric,     -- Snapshot del calibre de la bobina madre (se llena solo, no se digita)
   weight_grams numeric,               -- Peso TOTAL por rollo en gramos = core + película (ej: 1500g)
   raw_material_id uuid REFERENCES public.raw_materials(id) ON DELETE SET NULL,     -- Bobina exacta
@@ -266,7 +269,7 @@ CREATE TABLE public.raw_materials (
   name text NOT NULL,
   material_type text NOT NULL DEFAULT 'stretch',
   color text NOT NULL DEFAULT 'transparente', -- 'transparente' | 'negro' | 'azul'
-  width_cm numeric NOT NULL,                  -- 45, 50, 60 cm (coincide con cores)
+  width_cm numeric NOT NULL,                  -- 30, 45, 50, 60 cm (cortes permitidos en film_cut_widths)
   caliber_microns numeric NOT NULL,           -- Calibre en micras (ej: 17), se digita al crear la bobina
   current_stock_kg numeric NOT NULL DEFAULT 0,
   cost_per_kg numeric NOT NULL DEFAULT 0,
@@ -275,6 +278,16 @@ CREATE TABLE public.raw_materials (
   updated_at timestamptz DEFAULT now()
 );
 ```
+
+- **RPC `adjust_raw_material_stock(p_raw_id, p_new_stock_kg, p_unit_cost?, p_notes?)`** (solo admin, atómica): conteo físico / inventario inicial de una bobina; Kardex `ajuste_manual` con signo; si sube con `p_unit_cost` recalcula `cost_per_kg` ponderado. **Nunca** usar para compras (esas van por factura).
+- **RPC `adjust_core_stock(p_core_id, p_new_units, p_notes?)`** (solo admin): conteo / vaciado de cores armados.
+
+#### `film_cut_widths` (Cortes de bobina madre)
+Ver `supabase/migrations/20261104030000_film_cut_widths.sql`. Una bobina se corta en varias pistas:
+30 cm → 10, 15, 30 · 45 cm → 15, 45 · 50 cm → 8.3, 10, 12.5, 25, 50 · 60 cm → 15, 20, 30.
+- `film_cut_widths(bobina_width_cm, roll_width_cm, rolls_per_pass GENERATED = floor(bobina/rollo + 0.05))`, único por par. Lectura: autenticados; gestión: admin (Inventarios → Bobinas → "Cortes por ancho de bobina").
+- **`film_rolls_per_pass(bobina, rollo)`** → rollos por pasada o NULL (tolerancia 0.05 cm, para 8.3). Un ancho **sin cortes configurados** solo admite su mismo ancho.
+- Misma regla en frontend: `lib/film-cuts.ts` (web) y `app-operarios/src/filmCuts.ts` (app).
 
 #### `core_materials` (Material de Cores en Kg)
 El proveedor vende el cartón de cores **por kg y costo/kg**. Los operarios unen piezas (mano de obra) para armar
@@ -296,12 +309,14 @@ CREATE TABLE public.core_materials (
 CREATE TABLE public.core_specifications (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
-  length_cm numeric NOT NULL,                 -- 15, 30, 45, 50, 60 cm (coincide con raw_materials.width_cm)
+  length_cm numeric NOT NULL,                 -- Medida del rollo: 8.3, 10, 12.5, 15, 20, 25, 30, 45, 50 cm...
   weight_grams numeric NOT NULL DEFAULT 0,    -- Peso promedio del core armado (g): convierte kg <-> unidades
   standard_cost numeric NOT NULL DEFAULT 0,   -- Costo PROMEDIO por core (material + mano de obra), lo recalcula cada armado
   labor_cost_per_unit numeric NOT NULL DEFAULT 0,  -- Mano de obra por core armado (COP)
   core_material_id uuid REFERENCES public.core_materials(id) ON DELETE SET NULL,
   current_stock_units integer NOT NULL DEFAULT 0,
+  -- UNIQUE NULLS NOT DISTINCT (core_material_id, length_cm): una medida por material
+  -- (45 cm cartón y 45 cm color pueden coexistir; dos 45 cm cartón no)
   min_stock_alert_units integer NOT NULL DEFAULT 30,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now()
@@ -317,6 +332,16 @@ Cintas, cartón industrial, papel burbuja, zuncho, bolsas, etc. Ver `supabase/mi
 - `inventory_items(id, category_id → SET NULL, name, sku UNIQUE, unit, current_stock ≥ 0, avg_cost, sale_price, min_stock_alert, is_active, notes)`: cada producto tiene **su propia unidad** (und, rollo, caja, lámina, kg...).
 - Entradas: factura de compra con línea `insumo` (`purchase_invoice_items.inventory_item_id`, promedio ponderado de `avg_cost`) o **RPC `adjust_inventory_item_stock(p_item_id, p_new_stock, p_unit_cost?, p_notes?)`** (solo admin; conteo físico / inventario inicial).
 - Salidas: **RPC `register_inventory_exit(p_item_id, p_movement, p_quantity, p_notes?)`** (admin y vendedor) con `p_movement` ∈ `salida_venta | consumo_interno | merma_desperdicio`; bloquea si no hay stock.
+
+#### `waste_records` (Desperdicios / mermas)
+Ver `supabase/migrations/20261104060000_waste_records.sql`. Documento fuente de toda merma.
+- Campos: `waste_date`, `kind` ∈ `bobina` (kg) | `core` (und) | `material_core` (kg) | `insumo` (unidad del producto) con su FK, `item_name`/`unit` (snapshot), `quantity`, `unit_cost` (promedio al registrar), `total_cost`, `reason` (`waste_reason`), `order_id` (desperdicio de producción de un pedido, opcional), `notes`, `status` `activo|anulado` + `annul_reason`, `created_by`.
+- **RPC `register_waste(p_kind, p_ref_id, p_quantity, p_reason, p_order_id?, p_notes?, p_date?)`** (atómica): valida stock, descuenta, crea el documento y Kardex `merma_desperdicio` con `waste_record_id`. Roles: admin todo; **operario** bobina/core/material_core (app de planta); vendedor solo insumo.
+- **RPC `annul_waste(p_id, p_reason)`** (solo admin): devuelve el stock y deja un Kardex `merma_desperdicio` **negativo** (reverso). **Nunca borrar** registros de desperdicio; el trigger `tr_protect_waste_kardex` impide borrar sus movimientos del Kardex.
+- `register_inventory_exit(..., 'merma_desperdicio')` delega en `register_waste` (causa `otro`).
+- RLS: lectura admin/operario/vendedor; sin escritura directa (solo RPC). En realtime.
+- Reportes: `income_statement.mermas` es **neto** (`SUM(total_cost)`, las anulaciones restan) + `mermas_by_reason`; `financial_dashboard.waste` (costo mes / mes anterior, kg de película desperdiciada vs. usada en pedidos, causa principal). Alertas: `filmWasteWarn` 3 %, `filmWasteCritical` 6 %, `wasteGrowthWarn` +50 %.
+- El descuento teórico del pedido (`fn_descontar_inventario_despacho`) **no cambia**: el desperdicio real de producción se registra aparte, asociado al pedido.
 
 #### `inventory_transactions` (Kardex & Auditoría de Movimientos)
 ```sql
@@ -363,7 +388,9 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
    - El botón "+ Agregar otra medida" de stretch fue eliminado intencionalmente. Nunca reintroducirlo.
    - Además del stretch, un pedido puede llevar **cualquier cantidad de productos de bodega** (`order_products`): insumos, bobina madre, cores o material de cores. Un pedido puede ser solo de productos (no pasa por planta).
 2. **Correspondencia de Medidas:**
-   - El pedido se crea eligiendo una **bobina madre con stock** (define color, ancho y calibre) y un **core** de `length_cm == raw_materials.width_cm`. `custom_length_cm` y `custom_caliber_microns` se copian de la bobina.
+   - El pedido se crea eligiendo una **bobina madre con stock** (define color, ancho y calibre) y un **core** cuya medida sea un **corte permitido** de esa bobina (`film_cut_widths`; ej. bobina 60 cm → cores de 15, 20 o 30 cm). `create_order` lo valida con `film_rolls_per_pass`.
+   - `custom_length_cm` = medida del rollo (core); `custom_caliber_microns` se copia de la bobina; `bobina_width_cm` y `rolls_per_pass` quedan como snapshot para planta.
+   - El consumo **no cambia** por el corte: se descuenta de la bobina exacta el peso real de todos los rollos, `(weight_grams − core) × cantidad / 1000`. Si la cantidad no es múltiplo de los rollos por pasada, el formulario solo **avisa** (pistas sin usar), no bloquea.
 3. **Validación Preventiva de Cores:**
    - Si `cantidad_solicitada > core.current_stock_units`, el pedido se bloquea y se alerta al usuario.
 4. **Roles y Flujos de Producción:**
@@ -423,11 +450,12 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 
 ### B. Módulo de Inventarios & Kardex (`components/admin/inventory-panel.tsx`)
 - [x] **KPIs Globales:** Kilos totales en bodega, valorización económica en COP, tubos de cartón disponibles y alertas de mínimos.
-- [x] **Bobinas Madre:** Creación con calibre (micras) obligatorio, registro de compra (+Kg), vaciado rápido a 0 kg y eliminación (el historial del Kardex se conserva).
+- [x] **Bobinas Madre:** Creación con calibre (micras) obligatorio; botón **Compra** abre la factura de compra (`InvoiceFormModal` con la bobina prellenada → proveedor, CxP, Kardex y costo promedio); **Ajustar** = conteo físico / inventario inicial / vaciar vía RPC `adjust_raw_material_stock`; eliminación (el historial del Kardex se conserva).
 - [x] **Material de cores (kg):** alta/edición (costo/kg, alerta), ajuste por conteo físico (RPC) y vista de cuántos cores de cada medida alcanzan.
 - [x] **Cores armados por medida:** material asignado, peso promedio (g), mano de obra por core, costo promedio automático; **Registrar Armado** con desglose material + mano de obra y bloqueo si no alcanza el material.
 - [x] **Otros inventarios** (`components/admin/inventory/general-inventory.tsx`): chips por categoría con conteo y alerta, búsqueda, inactivos, valor y margen; nuevo producto con inventario inicial; salida (venta/consumo/merma), ajuste por conteo, edición y gestor de categorías.
-- [x] **Kardex:** Historial con filtros, búsqueda y eliminación de registros individuales (no altera el stock actual).
+- [x] **Kardex:** Historial con filtros, búsqueda y eliminación de registros individuales (no altera el stock actual; los de desperdicio no se borran).
+- [x] **Desperdicios** (`components/admin/inventory/waste-panel.tsx`): filtros (periodo, tipo, causa, anulados), KPIs (costo, kg de película y % sobre lo usado, causa principal), costo por causa, productos con más desperdicio, tabla con pedido asociado, registrar (`WasteFormModal`), anular con motivo y Excel. El P&G muestra las mermas por causa y el panel financiero alerta si el desperdicio de película supera la meta.
 
 ### C. Módulo de Categorías (`app/api/categories/` y `app/(admin)/admin/page.tsx`)
 - [x] Categorías 100% en Supabase (`public.categories`); las rutas ya **no** importan Firebase.
@@ -449,6 +477,7 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 - [x] Pantalla de pedidos priorizados para planta.
 - [x] Modal de cambio de estado en un clic.
 - [x] Modal para registrar **cores armados** vía RPC `register_core_assembly` (muestra kg a descontar y bloquea si no alcanza).
+- [x] **Desperdicio en planta** (`src/screens/WasteModal.tsx`, RPC `register_waste`): botón flotante "Desperdicio" y, en el detalle del pedido, "Registrar desperdicio de este pedido" (prellena bobina y pedido). Película, cores o material de cores con causa.
 - [x] Avisos no bloqueantes (`src/components/Notice.tsx`) en lugar de `Alert.alert`.
 - [x] El detalle del pedido muestra los productos de bodega a "Incluir en el despacho".
 - [x] Expo SDK 58. Interfaz con íconos Ionicons (sin emojis), cabecera con secciones-contador y botón flotante "Armar cores".

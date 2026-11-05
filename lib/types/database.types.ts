@@ -293,6 +293,56 @@ export interface Database {
         };
         Relationships: [];
       };
+      waste_records: {
+        Row: {
+          id: string;
+          waste_date: string;
+          kind: string;
+          raw_material_id: string | null;
+          core_id: string | null;
+          core_material_id: string | null;
+          inventory_item_id: string | null;
+          item_name: string;
+          unit: string;
+          quantity: number;
+          unit_cost: number;
+          total_cost: number;
+          reason: Database['public']['Enums']['waste_reason'];
+          order_id: string | null;
+          notes: string | null;
+          status: string;
+          annulled_at: string | null;
+          annulled_by: string | null;
+          annul_reason: string | null;
+          created_by: string;
+          created_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      film_cut_widths: {
+        Row: {
+          id: string;
+          bobina_width_cm: number;
+          roll_width_cm: number;
+          rolls_per_pass: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          bobina_width_cm: number;
+          roll_width_cm: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          bobina_width_cm?: number;
+          roll_width_cm?: number;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       order_items: {
         Row: {
           id: string;
@@ -302,6 +352,8 @@ export interface Database {
           completed_quantity: number;
           custom_length_cm: number;
           custom_caliber_microns: number | null;
+          bobina_width_cm: number | null;
+          rolls_per_pass: number | null;
           weight_grams: number;
           raw_material_id: string | null;
           core_id: string | null;
@@ -320,6 +372,8 @@ export interface Database {
           completed_quantity?: number;
           custom_length_cm?: number | null;
           custom_caliber_microns?: number | null;
+          bobina_width_cm?: number | null;
+          rolls_per_pass?: number | null;
           weight_grams: number;
           raw_material_id?: string | null;
           core_id?: string | null;
@@ -337,6 +391,8 @@ export interface Database {
           completed_quantity?: number;
           custom_length_cm?: number | null;
           custom_caliber_microns?: number | null;
+          bobina_width_cm?: number | null;
+          rolls_per_pass?: number | null;
           weight_grams?: number;
           raw_material_id?: string | null;
           core_id?: string | null;
@@ -1037,6 +1093,7 @@ export interface Database {
           total_cost: number;
           order_id: string | null;
           purchase_invoice_id: string | null;
+          waste_record_id: string | null;
           notes: string | null;
           created_by: string;
           created_at: string;
@@ -1342,6 +1399,34 @@ export interface Database {
         Args: { p_month: string };
         Returns: number;
       };
+      adjust_raw_material_stock: {
+        Args: { p_raw_id: string; p_new_stock_kg: number; p_unit_cost?: number; p_notes?: string };
+        Returns: undefined;
+      };
+      adjust_core_stock: {
+        Args: { p_core_id: string; p_new_units: number; p_notes?: string };
+        Returns: undefined;
+      };
+      register_waste: {
+        Args: {
+          p_kind: string;
+          p_ref_id: string;
+          p_quantity: number;
+          p_reason?: Database['public']['Enums']['waste_reason'];
+          p_order_id?: string;
+          p_notes?: string;
+          p_date?: string;
+        };
+        Returns: string;
+      };
+      annul_waste: {
+        Args: { p_id: string; p_reason: string };
+        Returns: undefined;
+      };
+      film_rolls_per_pass: {
+        Args: { p_bobina_width: number; p_roll_width: number };
+        Returns: number | null;
+      };
       create_order: {
         Args: { p_order: Json; p_stretch: Json | null; p_products: Json };
         Returns: Json;
@@ -1360,6 +1445,7 @@ export interface Database {
       };
     };
     Enums: {
+      waste_reason: 'refile' | 'arranque' | 'rollo_defectuoso' | 'rotura' | 'core_danado' | 'dano_bodega' | 'obsoleto' | 'otro';
       receivable_status: ReceivableStatus;
       expense_group: ExpenseGroup;
       expense_frequency: ExpenseFrequency;

@@ -24,6 +24,9 @@ const THRESHOLDS = {
     salesDropWarn: -0.2,
     reconciliationDays: 35,
     pettyMinShare: 0.2,
+    filmWasteWarn: 0.03, // % de película desperdiciada sobre la usada (mes)
+    filmWasteCritical: 0.06,
+    wasteGrowthWarn: 0.5, // costo de desperdicio +50% vs mes anterior
 };
 
 type Severity = 'critical' | 'warning' | 'info';
@@ -177,6 +180,18 @@ export default function FinancialDashboard() {
         // Inventario y producción
         if (n(data.inventory.low_stock) > 0)
             a.push({ severity: 'warning', process: 'Inventario', title: `${data.inventory.low_stock} ítem(s) en o bajo el mínimo`, detail: (data.inventory.low_stock_names as string[]).join(', ') });
+        // Desperdicio
+        if (data.waste) {
+            const w = data.waste;
+            const used = n(w.film_used_kg_month) + n(w.film_kg_month);
+            const share = used > 0 ? n(w.film_kg_month) / used : null;
+            if (share !== null && share >= T.filmWasteCritical)
+                a.push({ severity: 'critical', process: 'Producción', title: `Desperdicio de película alto (${pct(share, 1)})`, detail: `${n(w.film_kg_month).toLocaleString('es-CO')} kg desperdiciados este mes. Revisa refiles, arranques y rollos defectuosos en Inventarios → Desperdicios.` });
+            else if (share !== null && share >= T.filmWasteWarn)
+                a.push({ severity: 'warning', process: 'Producción', title: `Desperdicio de película sobre la meta (${pct(share, 1)})`, detail: `Meta: menos de ${pct(T.filmWasteWarn)} de la película usada.` });
+            if (n(w.cost_prev_month) > 0 && n(w.cost_month) > n(w.cost_prev_month) * (1 + T.wasteGrowthWarn))
+                a.push({ severity: 'warning', process: 'Inventario', title: 'El costo de desperdicio creció frente al mes anterior', detail: `${formatCOP(n(w.cost_month))} este mes vs. ${formatCOP(n(w.cost_prev_month))} el mes anterior.` });
+        }
         if (n(data.production.late) > 0)
             a.push({ severity: 'critical', process: 'Producción', title: `${data.production.late} pedido(s) atrasados`, detail: 'Fecha de entrega vencida y aún no despachados.' });
         if (n(data.production.due_today) > 0)
@@ -320,6 +335,19 @@ export default function FinancialDashboard() {
                     value={`${data.production.queue + data.production.winding} en proceso`}
                     sub={`${data.production.ready} listos · ${data.production.late} atrasados`}
                 />
+                {data.waste && (() => {
+                    const w = data.waste;
+                    const used = n(w.film_used_kg_month) + n(w.film_kg_month);
+                    return (
+                        <Tile
+                            label="Desperdicio del mes"
+                            value={formatCOP(n(w.cost_month))}
+                            sub={`Película ${n(w.film_kg_month).toLocaleString('es-CO', { maximumFractionDigits: 1 })} kg${
+                                used > 0 ? ` (${pct(n(w.film_kg_month) / used, 1)} de lo usado)` : ''
+                            } · mes anterior ${formatCOP(n(w.cost_prev_month))}`}
+                        />
+                    );
+                })()}
             </Group>
 
             <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">

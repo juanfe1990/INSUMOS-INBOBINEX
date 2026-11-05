@@ -30,7 +30,7 @@ const UNIT_SUGGESTIONS = ['und', 'rollo', 'caja', 'paquete', 'lámina', 'pliego'
 const EXIT_TYPES = [
     { value: 'salida_venta', label: 'Venta / despacho a cliente' },
     { value: 'consumo_interno', label: 'Consumo interno (planta / embalaje)' },
-    { value: 'merma_desperdicio', label: 'Merma / daño' },
+    { value: 'merma_desperdicio', label: 'Merma / daño (queda en Desperdicios)' },
 ] as const;
 
 type ExitType = (typeof EXIT_TYPES)[number]['value'];

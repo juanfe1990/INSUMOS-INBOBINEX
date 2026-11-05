@@ -36,6 +36,8 @@ type Props = {
     /** Productos del inventario general (cintas, cartón...) */
     inventoryItems: InventoryItem[];
     defaultSupplierId?: string;
+    /** Línea inicial prellenada (ej. "+ Compra" desde Inventarios sobre una bobina) */
+    initialLine?: { type: PurchaseItemType; refId: string };
     onClose: () => void;
     onSaved: () => void;
 };
@@ -48,6 +50,7 @@ export default function InvoiceFormModal({
     coreMaterials,
     inventoryItems,
     defaultSupplierId,
+    initialLine,
     onClose,
     onSaved,
 }: Props) {
@@ -87,7 +90,30 @@ export default function InvoiceFormModal({
                     ? String(Number(activeItems[0].avg_cost) || '')
                     : '',
     });
-    const [lines, setLines] = useState<Line[]>(() => [newLine()]);
+    const [lines, setLines] = useState<Line[]>(() => {
+        if (!initialLine) return [newLine()];
+        const base = newLine(initialLine.type);
+        if (initialLine.type === 'bobina') {
+            const raw = rawMaterials.find((m) => m.id === initialLine.refId);
+            return [{ ...base, raw_material_id: initialLine.refId, unit_cost: raw ? String(Number(raw.cost_per_kg) || '') : '' }];
+        }
+        if (initialLine.type === 'core') {
+            const mat = coreMaterials.find((m) => m.id === initialLine.refId);
+            return [{ ...base, core_material_id: initialLine.refId, unit_cost: mat ? String(Number(mat.cost_per_kg) || '') : '' }];
+        }
+        if (initialLine.type === 'insumo') {
+            const it = activeItems.find((m) => m.id === initialLine.refId);
+            return [
+                {
+                    ...base,
+                    inventory_item_id: initialLine.refId,
+                    unit: it?.unit || base.unit,
+                    unit_cost: it ? String(Number(it.avg_cost) || '') : '',
+                },
+            ];
+        }
+        return [base];
+    });
 
     const supplier = suppliers.find((s) => s.id === supplierId);
 

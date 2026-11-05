@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { WASTE_REASON_LABEL } from '@/lib/waste';
 import { ChevronDown, ChevronRight, Download, Loader2, Printer } from 'lucide-react';
 import { toast } from 'sonner';
 import { createClient } from '@/lib/supabase/client';
@@ -63,7 +64,7 @@ export default function IncomeStatement() {
     const [cur, setCur] = useState<any>(null);
     const [prev, setPrev] = useState<any>(null);
     const [loading, setLoading] = useState(true);
-    const [open, setOpen] = useState<Record<string, boolean>>({ opex: true, nonop: true });
+    const [open, setOpen] = useState<Record<string, boolean>>({ opex: true, nonop: true, waste: true });
 
     useEffect(() => {
         supabase
@@ -116,7 +117,19 @@ export default function IncomeStatement() {
         push('cost_cores', 'Cores', 'sub');
         push('cost_products', 'Productos vendidos', 'sub');
         if (!cur.client_filtered) {
-            push('mermas', 'Mermas de inventario', 'item');
+            push('mermas', 'Mermas y desperdicios de inventario', 'item');
+            const prevWaste = new Map<string, number>(
+                ((prev?.mermas_by_reason || []) as any[]).map((o) => [o.reason, Number(o.amount)])
+            );
+            for (const o of (cur.mermas_by_reason || []) as any[])
+                L.push({
+                    key: 'waste:' + o.reason,
+                    label: WASTE_REASON_LABEL[o.reason] || o.reason,
+                    level: 'sub',
+                    cur: Number(o.amount),
+                    prev: prev ? prevWaste.get(o.reason) ?? 0 : null,
+                    group: 'waste',
+                });
             push('consumo_interno', 'Consumo interno de inventario', 'item');
         }
         push('gross_profit', 'Utilidad bruta', 'result');
@@ -279,8 +292,11 @@ export default function IncomeStatement() {
                                 {lines.map((l) => {
                                     if (l.level === 'sub' && l.group && !open[l.group]) return null;
                                     const variation = l.prev !== null && l.prev !== 0 ? (l.cur - l.prev) / Math.abs(l.prev) : null;
-                                    const isGroupHead = l.key === 'opex_total' || l.key === 'non_operating_total';
-                                    const groupKey = l.key === 'opex_total' ? 'opex' : 'nonop';
+                                    const isGroupHead =
+                                        l.key === 'opex_total' ||
+                                        l.key === 'non_operating_total' ||
+                                        (l.key === 'mermas' && lines.some((x) => x.group === 'waste'));
+                                    const groupKey = l.key === 'opex_total' ? 'opex' : l.key === 'mermas' ? 'waste' : 'nonop';
                                     const negative = l.level === 'result' && l.cur < 0;
                                     return (
                                         <tr

@@ -82,8 +82,13 @@ export type OrderItem = {
     product_id: string;
     quantity: number;
     completed_quantity: number;
+    /** Medida del rollo fabricado (= largo del core); puede ser un corte de la bobina */
     custom_length_cm?: number | null;
     custom_caliber_microns?: number | null;
+    /** Ancho de la bobina madre de la que se corta */
+    bobina_width_cm?: number | null;
+    /** Rollos que salen por pasada de la bobina */
+    rolls_per_pass?: number | null;
     weight_grams?: number | null;
     /** Bobina madre exacta usada para el pedido */
     raw_material_id?: string | null;
@@ -259,6 +264,55 @@ export type CoreMaterial = {
     updated_at: string;
 };
 
+/** Desperdicio / merma: documento fuente (RPC register_waste / annul_waste) */
+export type WasteKind = 'bobina' | 'core' | 'material_core' | 'insumo';
+export type WasteReason =
+    | 'refile'
+    | 'arranque'
+    | 'rollo_defectuoso'
+    | 'rotura'
+    | 'core_danado'
+    | 'dano_bodega'
+    | 'obsoleto'
+    | 'otro';
+export type WasteRecord = {
+    id: string;
+    waste_date: string;
+    kind: WasteKind;
+    raw_material_id: string | null;
+    core_id: string | null;
+    core_material_id: string | null;
+    inventory_item_id: string | null;
+    /** Snapshot del nombre del producto */
+    item_name: string;
+    unit: string;
+    quantity: number;
+    unit_cost: number;
+    total_cost: number;
+    reason: WasteReason;
+    /** Pedido de producción al que se asocia (opcional) */
+    order_id: string | null;
+    notes: string | null;
+    status: 'activo' | 'anulado';
+    annulled_at: string | null;
+    annulled_by: string | null;
+    annul_reason: string | null;
+    created_by: string;
+    created_at: string;
+    order?: { order_number: number; client?: { business_name: string } | null } | null;
+    creator?: { full_name: string } | null;
+};
+
+/** Corte permitido de una bobina madre (60 cm → rollos de 15 cm, 4 por pasada) */
+export type FilmCutWidth = {
+    id: string;
+    bobina_width_cm: number;
+    roll_width_cm: number;
+    /** Columna generada: floor(bobina / rollo) */
+    rolls_per_pass: number;
+    created_at: string;
+};
+
 export type CoreSpecification = {
     id: string;
     name: string;
@@ -287,6 +341,8 @@ export type InventoryTransaction = {
     quantity: number;
     unit_cost: number;
     total_cost: number;
+    /** Registro de desperdicio que originó el movimiento */
+    waste_record_id?: string | null;
     order_id?: string | null;
     notes?: string | null;
     created_by: string;

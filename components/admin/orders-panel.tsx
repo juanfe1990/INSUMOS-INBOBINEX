@@ -9,6 +9,7 @@ import type {
     Client,
     CoreSpecification,
     CoreMaterial,
+    FilmCutWidth,
     InventoryCategory,
     InventoryItem,
     RawMaterial,
@@ -19,6 +20,7 @@ import OrderProductsEditor, {
     type ProductLine,
 } from '@/components/admin/orders/order-products-editor';
 import { useConfirm } from '@/components/admin/confirm-dialog';
+import { allowedRollWidths, fmtCm, passPlan, rollsPerPass } from '@/lib/film-cuts';
 import {
     Clock,
     AlertCircle,
@@ -28,6 +30,7 @@ import {
     CheckCircle2,
     Truck,
     RotateCw,
+    Scissors,
     X,
     Filter,
     Trash2,
@@ -142,6 +145,7 @@ export default function OrdersPanel() {
     const [cores, setCores] = useState<CoreSpecification[]>([]);
     const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([]);
     const [coreMaterials, setCoreMaterials] = useState<CoreMaterial[]>([]);
+    const [cuts, setCuts] = useState<FilmCutWidth[]>([]);
     const [invItems, setInvItems] = useState<InventoryItem[]>([]);
     const [invCategories, setInvCategories] = useState<InventoryCategory[]>([]);
     // Stretch fabricado (máximo 1 medida) y productos de bodega
@@ -169,8 +173,9 @@ export default function OrdersPanel() {
         }));
     };
 
+    // Cores compatibles: cualquier corte permitido de la bobina (60 cm → 15, 20, 30 cm)
     const coresForWidth = (widthCm: number) =>
-        cores.filter((c) => Number(c.length_cm) === Number(widthCm));
+        cores.filter((c) => rollsPerPass(cuts, widthCm, Number(c.length_cm)) !== null);
 
     // Al elegir la bobina, el core se filtra por su ancho y se preselecciona el primero
     const handleRawChange = (rawId: string) => {
@@ -183,7 +188,7 @@ export default function OrdersPanel() {
     const fetchData = async () => {
         try {
             setLoading(true);
-            const [ordersRes, clientsRes, coresRes, rawRes, coreMatRes, itemsRes, catRes] = await Promise.all([
+            const [ordersRes, clientsRes, coresRes, rawRes, coreMatRes, itemsRes, catRes, cutsRes] = await Promise.all([
                 supabase
                     .from('orders')
                     .select('*, client:clients(*), items:order_items(*), products:order_products(*)')
@@ -195,7 +200,9 @@ export default function OrdersPanel() {
                 supabase.from('core_materials').select('*'),
                 supabase.from('inventory_items').select('*').order('name'),
                 supabase.from('inventory_categories').select('*').order('display_order').order('name'),
+                supabase.from('film_cut_widths').select('*').order('bobina_width_cm').order('roll_width_cm'),
             ]);
+            if (cutsRes.data) setCuts(cutsRes.data as FilmCutWidth[]);
 
             if (rawRes.data) setRawMaterials(rawRes.data as RawMaterial[]);
             if (coreMatRes.data) setCoreMaterials(coreMatRes.data as CoreMaterial[]);
@@ -298,7 +305,7 @@ export default function OrdersPanel() {
             return next.raw_material_id === prev.raw_material_id && next.core_id === prev.core_id ? prev : next;
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [rawMaterials, cores]);
+    }, [rawMaterials, cores, cuts]);
 
     // Actualizar dirección al seleccionar cliente
     const handleClientChange = (clientId: string) => {
@@ -333,8 +340,12 @@ export default function OrdersPanel() {
                 toast.error('Selecciona la bobina madre (tipo de stretch) a usar');
                 return;
             }
-            if (!core || Number(core.length_cm) !== Number(raw.width_cm)) {
-                toast.error(`Selecciona un core de ${Number(raw.width_cm)} cm compatible con la bobina`);
+            if (!core || rollsPerPass(cuts, raw.width_cm, Number(core.length_cm)) === null) {
+                toast.error(
+                    `La bobina de ${fmtCm(raw.width_cm)} cm permite rollos de ${allowedRollWidths(cuts, raw.width_cm)
+                        .map(fmtCm)
+                        .join(', ')} cm. Selecciona un core de esas medidas.`
+                );
                 return;
             }
             if (
@@ -502,6 +513,10 @@ export default function OrdersPanel() {
     const formWeight = toNumber(item.weight_grams);
     const roll = computeRoll(selectedRaw, selectedCore, formQty, formWeight);
     const hasWeight = formWeight > 0;
+    const perPass =
+        selectedRaw && selectedCore ? rollsPerPass(cuts, selectedRaw.width_cm, Number(selectedCore.length_cm)) : null;
+    const plan = perPass ? passPlan(formQty, perPass) : null;
+    const allowedWidths = selectedRaw ? allowedRollWidths(cuts, selectedRaw.width_cm) : [];
 
     const stretchBlock = !includeStretch
         ? null
@@ -981,7 +996,11 @@ export default function OrdersPanel() {
                                     <div className="grid grid-cols-12 items-end gap-2.5">
                                         <div className="col-span-12 sm:col-span-5">
                                             <label className="block text-[10px] font-semibold text-[#949E97] mb-1">
-                                                Core / Tubo {selectedRaw ? `de ${Number(selectedRaw.width_cm)} cm` : ''} *
+                                                Medida del rollo / core{' '}
+                                                {selectedRaw
+                                                    ? `(cortes de ${fmtCm(selectedRaw.width_cm)} cm: ${allowedWidths.map(fmtCm).join(', ')})`
+                                                    : ''}{' '}
+                                                *
                                             </label>
                                             <select
                                                 required
@@ -992,12 +1011,20 @@ export default function OrdersPanel() {
                                             >
                                                 {compatibleCores.length === 0 ? (
                                                     <option value="">
-                                                        {selectedRaw ? 'Sin cores de este ancho' : 'Elige primero la bobina'}
+                                                        {selectedRaw ? 'Sin cores para estos cortes' : 'Elige primero la bobina'}
                                                     </option>
                                                 ) : (
                                                     compatibleCores.map((c) => (
                                                         <option key={c.id} value={c.id}>
-                                                            {c.name} — {formatG(Number(c.weight_grams || 0))} g — {c.current_stock_units} und
+                                                            {fmtCm(c.length_cm)} cm
+                                                            {(() => {
+                                                                const n = selectedRaw
+                                                                    ? rollsPerPass(cuts, selectedRaw.width_cm, Number(c.length_cm))
+                                                                    : null;
+                                                                return n && n > 1 ? ` (${n} por pasada)` : '';
+                                                            })()}{' '}
+                                                            — {coreMaterials.find((m) => m.id === c.core_material_id)?.name || c.name} —{' '}
+                                                            {formatG(Number(c.weight_grams || 0))} g — {c.current_stock_units} und
                                                         </option>
                                                     ))
                                                 )}
@@ -1071,7 +1098,8 @@ export default function OrdersPanel() {
                                         <div className="flex items-center gap-1.5 rounded-md border border-red-200 bg-red-50 p-2 text-[11px] font-semibold text-red-700">
                                             <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
                                             <span>
-                                                No hay cores de {Number(selectedRaw.width_cm)} cm registrados. Crea la medida en
+                                                No hay cores registrados para los cortes de esta bobina (
+                                                {allowedWidths.map(fmtCm).join(', ')} cm). Crea la medida en
                                                 &quot;Inventarios &amp; Kardex → Cores&quot;.
                                             </span>
                                         </div>
@@ -1079,6 +1107,28 @@ export default function OrdersPanel() {
 
                                     {selectedRaw && selectedCore && hasWeight && (
                                         <div className="space-y-1.5 rounded-md border border-[#C8CDC9]/70 bg-[#F8F9FA] p-2.5 text-[11px]">
+                                            {perPass && perPass > 1 && plan && (
+                                                <div className="flex flex-wrap items-center gap-x-1.5 text-[#2E4040]">
+                                                    <Scissors className="h-3.5 w-3.5 text-[#949E97]" />
+                                                    <span>
+                                                        Corte: bobina <b>{fmtCm(selectedRaw.width_cm)} cm</b> →{' '}
+                                                        <b>
+                                                            {perPass} rollos de {fmtCm(selectedCore.length_cm)} cm
+                                                        </b>{' '}
+                                                        por pasada · {formQty} rollos ={' '}
+                                                        <b>
+                                                            {plan.passes} {plan.passes === 1 ? 'pasada' : 'pasadas'}
+                                                        </b>
+                                                    </span>
+                                                    {plan.spare > 0 && formQty > 0 && (
+                                                        <span className="basis-full text-amber-700">
+                                                            En la última pasada quedan {plan.spare}{' '}
+                                                            {plan.spare === 1 ? 'pista' : 'pistas'} sin usar: considera
+                                                            pedir {plan.suggested} rollos.
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            )}
                                             {roll.coreWeight === 0 && (
                                                 <div className="flex items-center gap-1.5 font-semibold text-amber-700">
                                                     <AlertCircle className="h-3.5 w-3.5 shrink-0" />
