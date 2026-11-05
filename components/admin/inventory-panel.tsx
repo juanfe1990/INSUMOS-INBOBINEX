@@ -412,6 +412,10 @@ export default function InventoryPanel() {
             toast.error('Ingresa el calibre de la bobina en micras');
             return;
         }
+        if (!(Number(String(newRawWidth).replace(',', '.')) > 0)) {
+            toast.error('Ingresa el ancho de la bobina en cm (se permiten decimales)');
+            return;
+        }
 
         try {
             setSaving(true);
@@ -419,7 +423,7 @@ export default function InventoryPanel() {
                 name: newRawName.trim(),
                 material_type: 'stretch',
                 color: newRawColor,
-                width_cm: Number(newRawWidth),
+                width_cm: Number(String(newRawWidth).replace(',', '.')),
                 caliber_microns: Number(newRawCaliber),
                 cost_per_kg: Number(newRawCost) || 0,
                 min_stock_alert_kg: Number(newRawMinStock) || 50,
@@ -556,7 +560,12 @@ export default function InventoryPanel() {
             toast.error('Selecciona el material de cores con el que se arma esta medida');
             return;
         }
-        const newLength = Number(newCoreLength) || 50;
+        // Acepta coma o punto decimal (8,3 / 12.5)
+        const newLength = Number(String(newCoreLength).replace(',', '.'));
+        if (!(newLength > 0)) {
+            toast.error('Ingresa la medida del core en cm (se permiten decimales: 8,3 · 12,5)');
+            return;
+        }
         if (findDuplicateCore(newCoreMaterialId, newLength)) {
             toast.error(duplicateCoreMessage(newCoreMaterialId, newLength));
             return;
@@ -1936,10 +1945,11 @@ export default function InventoryPanel() {
                                         Ancho (cm) *:
                                     </label>
                                     <input
-                                        type="number"
+                                        type="text"
+                                        inputMode="decimal"
                                         required
                                         value={newRawWidth}
-                                        onChange={(e) => setNewRawWidth(e.target.value)}
+                                        onChange={(e) => setNewRawWidth(e.target.value.replace(/[^0-9.,]/g, ''))}
                                         placeholder="45, 50, 60..."
                                         className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
                                     />
@@ -2325,13 +2335,12 @@ export default function InventoryPanel() {
                                     <div>
                                         <label className="mb-1 block text-xs font-semibold text-[#2E4040]">Medida (cm):</label>
                                         <input
-                                            type="number"
+                                            type="text"
+                                            inputMode="decimal"
                                             required
-                                            min="1"
-                                            step="1"
                                             value={newCoreLength}
-                                            onChange={(e) => setNewCoreLength(e.target.value)}
-                                            placeholder="15, 30, 45, 50, 60..."
+                                            onChange={(e) => setNewCoreLength(e.target.value.replace(/[^0-9.,]/g, ''))}
+                                            placeholder="8,3 · 12,5 · 15 · 45..."
                                             className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-xs text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
                                         />
                                     </div>
