@@ -27,11 +27,12 @@ c:\Users\jubla\Desktop\Inbobinex\
 │       ├── route.ts                   # GET (lista) y POST (crear / { seed: true })
 │       └── [id]/route.ts              # PUT (actualizar) y DELETE (eliminar con desvinculación)
 ├── components/admin/                  # Módulos del Panel de Administración
-│   ├── orders-panel.tsx               # Gestión de pedidos: stretch (medida única) + productos de bodega
+│   ├── orders-panel.tsx               # Gestión de pedidos: stretch (varias medidas) + productos de bodega + pedido habitual
 │   ├── orders/order-products-editor.tsx # Líneas de productos de inventario dentro del pedido
 │   ├── inventory-panel.tsx            # KPIs, bobinas madre, cores, otros inventarios y Kardex
 │   ├── inventory/general-inventory.tsx # Otros inventarios: cintas, cartón industrial, etc. (categorías)
 │   ├── clients-panel.tsx              # Directorio de clientes con NIT/RUT, plazo de pago y cupo
+│   ├── clients/                       # Pedido habitual, importar/exportar CSV, estadísticas de clientes
 │   ├── admin-sidebar.tsx              # Menú lateral plegable (módulos, usuario, salir)
 │   ├── expenses/                      # Gastos fijos y operativos
 │   │   ├── expenses-panel.tsx         # Vista del mes, plantillas de gastos fijos, resumen anual
@@ -202,8 +203,9 @@ CREATE TABLE public.orders (
   updated_at timestamptz DEFAULT now()
 );
 
--- REGLA DE NEGOCIO: order_items = stretch FABRICADO, máximo 1 registro por orden (índice único
--- order_items_one_measure_per_order). 0 registros si el pedido es solo de productos de bodega.
+-- REGLA DE NEGOCIO: order_items = stretch FABRICADO, UNA FILA POR MEDIDA (ej. 15 cm y 45 cm en el mismo
+-- pedido / factura; desde 2026-11-05 ya no existe el índice único de una sola medida).
+-- 0 registros si el pedido es solo de productos de bodega.
 CREATE TABLE public.order_items (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   order_id uuid NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE,
@@ -333,6 +335,17 @@ Cintas, cartón industrial, papel burbuja, zuncho, bolsas, etc. Ver `supabase/mi
 - Entradas: factura de compra con línea `insumo` (`purchase_invoice_items.inventory_item_id`, promedio ponderado de `avg_cost`) o **RPC `adjust_inventory_item_stock(p_item_id, p_new_stock, p_unit_cost?, p_notes?)`** (solo admin; conteo físico / inventario inicial).
 - Salidas: **RPC `register_inventory_exit(p_item_id, p_movement, p_quantity, p_notes?)`** (admin y vendedor) con `p_movement` ∈ `salida_venta | consumo_interno | merma_desperdicio`; bloquea si no hay stock.
 
+#### Pedido habitual por cliente: `client_order_templates` + `clients.reorder_days`
+Ver `supabase/migrations/20261105010000_multi_stretch_client_templates.sql`.
+- `client_order_templates(client_id → CASCADE, position, kind ∈ stretch|insumo|bobina|core|material_core, raw_material_id, core_id, inventory_item_id, core_material_id, weight_grams (solo stretch), quantity, unit_price)`. Es una **plantilla**: no valida stock (eso pasa al crear el pedido). RLS: admin y vendedor.
+- `clients.reorder_days`: cada cuántos días suele pedir (alerta "deberían pedir pronto").
+- **RPC `replace_client_templates(p_data)`** (atómica): reemplaza el pedido habitual (y la frecuencia) de los clientes enviados. La usan el editor por cliente y la importación masiva.
+- Al elegir el cliente en **Nuevo pedido** (web y app) se carga solo su pedido habitual; botón "Recargar pedido habitual". La app solo carga stretch + insumos (avisa si hay otros tipos).
+- Importar / exportar CSV (`lib/client-templates.ts`): columnas `cliente_nit; cliente; frecuencia_dias; tipo; referencia; medida_cm; material_core; peso_g; cantidad; precio`. Se resuelve por nombre (bobina, material, producto o SKU) sin tildes/mayúsculas; NIT sin puntos ni DV; números con formato colombiano (`1.100`, `8,3`). Vista previa con errores por fila antes de aplicar.
+
+#### Estadísticas de clientes: RPC `clients_dashboard(p_from, p_to)` (admin y vendedor)
+Pedidos no cancelados por fecha de creación: resumen (ventas sin IVA, pedidos, clientes, ticket, rollos, kg, stretch vs bodega, cobrado, cartera), periodo anterior equivalente, serie diaria, ventas por cliente (con saldo y vencido), rollos por medida, película por tipo, productos de bodega top, estados, **recompra** (según `reorder_days`) e inactivos. Web: `components/admin/clients/clients-dashboard.tsx`; app: `src/screens/ClientsStatsScreen.tsx` (pestaña Clientes).
+
 #### `waste_records` (Desperdicios / mermas)
 Ver `supabase/migrations/20261104060000_waste_records.sql`. Documento fuente de toda merma.
 - Campos: `waste_date`, `kind` ∈ `bobina` (kg) | `core` (und) | `material_core` (kg) | `insumo` (unidad del producto) con su FK, `item_name`/`unit` (snapshot), `quantity`, `unit_cost` (promedio al registrar), `total_cost`, `reason` (`waste_reason`), `order_id` (desperdicio de producción de un pedido, opcional), `notes`, `status` `activo|anulado` + `annul_reason`, `created_by`.
@@ -383,10 +396,11 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 
 ## 4. ⚖️ Reglas de Negocio Inviolables
 
-1. **Una Sola Medida de Stretch por Pedido:**
-   - El stretch **fabricado** de un pedido (`order_items`) es como máximo **una medida** (lo garantiza un índice único).
-   - El botón "+ Agregar otra medida" de stretch fue eliminado intencionalmente. Nunca reintroducirlo.
-   - Además del stretch, un pedido puede llevar **cualquier cantidad de productos de bodega** (`order_products`): insumos, bobina madre, cores o material de cores. Un pedido puede ser solo de productos (no pasa por planta).
+1. **Varias medidas de stretch por pedido (cambio pedido por el dueño, 2026-11-05):**
+   - Un pedido puede llevar **varias medidas** de stretch fabricado (una fila de `order_items` por medida), p. ej. rollos de 15 cm y de 45 cm en la misma factura. La regla anterior de "una sola medida" quedó **derogada**.
+   - `create_order` recibe `p_stretch` como **arreglo** (sigue aceptando un objeto único) y valida el stock **combinado**: kg de película por bobina y unidades por core sumando todas las medidas + productos de bodega de la misma referencia.
+   - Frontend: `lib/stretch-lines.ts` (`analyzeStretch`, misma validación) + `components/admin/orders/stretch-lines-editor.tsx`; app: `src/stretchLines.ts`.
+   - Además del stretch, un pedido puede llevar **cualquier cantidad de productos de bodega** (`order_products`). Un pedido puede ser solo de productos (no pasa por planta).
 2. **Correspondencia de Medidas:**
    - El pedido se crea eligiendo una **bobina madre con stock** (define color, ancho y calibre) y un **core** cuya medida sea un **corte permitido** de esa bobina (`film_cut_widths`; ej. bobina 60 cm → cores de 15, 20 o 30 cm). `create_order` lo valida con `film_rolls_per_pass`.
    - `custom_length_cm` = medida del rollo (core); `custom_caliber_microns` se copia de la bobina; `bobina_width_cm` y `rolls_per_pass` quedan como snapshot para planta.
@@ -415,7 +429,8 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 ## 5. ✅ Estado de Avance Implementado
 
 ### A. Módulo de Pedidos (`components/admin/orders-panel.tsx`)
-- [x] Modal con stretch opcional (1 sola medida) + **productos de bodega** de cualquier inventario (`OrderProductsEditor`), total del pedido y creación atómica vía RPC `create_order`.
+- [x] Modal con **varias medidas de stretch** (`StretchLinesEditor`, "Agregar otra medida") + **productos de bodega** (`OrderProductsEditor`), total del pedido y creación atómica vía RPC `create_order`.
+- [x] Al elegir el cliente se carga su **pedido habitual** (y botón para recargarlo).
 - [x] Pedidos solo de productos quedan "Listo Despacho" al crearse; la tabla muestra rollos + productos + total.
 - [x] Interruptor **Con IVA / Sin IVA** (19%), plazo de pago editable (prellenado del cliente), desglose subtotal/IVA/total y aviso de cupo excedido; la tabla muestra saldo y vencimiento.
 
@@ -457,6 +472,12 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 - [x] **Kardex:** Historial con filtros, búsqueda y eliminación de registros individuales (no altera el stock actual; los de desperdicio no se borran).
 - [x] **Desperdicios** (`components/admin/inventory/waste-panel.tsx`): filtros (periodo, tipo, causa, anulados), KPIs (costo, kg de película y % sobre lo usado, causa principal), costo por causa, productos con más desperdicio, tabla con pedido asociado, registrar (`WasteFormModal`), anular con motivo y Excel. El P&G muestra las mermas por causa y el panel financiero alerta si el desperdicio de película supera la meta.
 
+### J. Clientes (`components/admin/clients-panel.tsx` + `components/admin/clients/`)
+- [x] Pestañas **Directorio** y **Estadísticas**.
+- [x] **Pedido habitual** por cliente (`client-template-modal.tsx`): medidas de stretch + productos + frecuencia en días.
+- [x] **Exportar / Importar** pedidos habituales de todos los clientes en CSV (`templates-import-modal.tsx`, vista previa con errores).
+- [x] **Estadísticas** (`clients-dashboard.tsx`): KPIs con variación vs. periodo anterior, ventas por día/semana/mes (con tabla), ventas por cliente, rollos por medida, película por tipo, productos de bodega, recompra, inactivos y estados; export Excel.
+
 ### C. Módulo de Categorías (`app/api/categories/` y `app/(admin)/admin/page.tsx`)
 - [x] Categorías 100% en Supabase (`public.categories`); las rutas ya **no** importan Firebase.
 - [x] Sin siembra automática (hacía reaparecer categorías borradas). Si la tabla está vacía, el modal ofrece "Cargar categorías predeterminadas" (`POST /api/categories { seed: true }`).
@@ -481,6 +502,8 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 - [x] Avisos no bloqueantes (`src/components/Notice.tsx`) en lugar de `Alert.alert`.
 - [x] El detalle del pedido muestra los productos de bodega a "Incluir en el despacho".
 - [x] Expo SDK 58. Interfaz con íconos Ionicons (sin emojis), cabecera con secciones-contador y botón flotante "Armar cores".
+- [x] Pedido rápido con **varias medidas** y carga automática del **pedido habitual**; tarjetas de planta muestran todas las medidas.
+- [x] Pestaña **Clientes** (admin): estadísticas por rango (7/30/90 días, mes) con la misma RPC `clients_dashboard`.
 - [x] **Admin en la app** (barra inferior): pedido rápido (cliente, stretch, insumos, entrega, IVA, plazo) y Proveedores/CxP (KPIs, facturas abiertas/vencidas, registrar pago, nueva factura con bobina / material cores / insumo / otro, IVA y ReteFuente). Reutilizan las mismas RPC que la web.
 
 ---

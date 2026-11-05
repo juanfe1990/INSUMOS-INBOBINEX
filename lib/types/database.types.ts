@@ -81,6 +81,7 @@ export interface Database {
           nit_rut: string | null;
           payment_terms_days: number;
           credit_limit: number | null;
+          reorder_days: number | null;
           contact_name: string;
           phone: string;
           email: string | null;
@@ -97,6 +98,7 @@ export interface Database {
           nit_rut?: string | null;
           payment_terms_days?: number;
           credit_limit?: number | null;
+          reorder_days?: number | null;
           contact_name: string;
           phone: string;
           email?: string | null;
@@ -113,6 +115,7 @@ export interface Database {
           nit_rut?: string | null;
           payment_terms_days?: number;
           credit_limit?: number | null;
+          reorder_days?: number | null;
           contact_name?: string;
           phone?: string;
           email?: string | null;
@@ -291,6 +294,27 @@ export interface Database {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [];
+      };
+      client_order_templates: {
+        Row: {
+          id: string;
+          client_id: string;
+          position: number;
+          kind: string;
+          raw_material_id: string | null;
+          core_id: string | null;
+          inventory_item_id: string | null;
+          core_material_id: string | null;
+          weight_grams: number | null;
+          quantity: number;
+          unit_price: number;
+          notes: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: never;
+        Update: never;
         Relationships: [];
       };
       waste_records: {
@@ -1406,6 +1430,14 @@ export interface Database {
       adjust_core_stock: {
         Args: { p_core_id: string; p_new_units: number; p_notes?: string };
         Returns: undefined;
+      };
+      replace_client_templates: {
+        Args: { p_data: Json };
+        Returns: number;
+      };
+      clients_dashboard: {
+        Args: { p_from: string; p_to: string };
+        Returns: Json;
       };
       register_waste: {
         Args: {

@@ -1,10 +1,40 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import type { Client } from '@/lib/types';
-import { Building2, Plus, Search, Loader2, Phone, MapPin, Mail, UserCheck, Edit2 } from 'lucide-react';
+import type {
+    Client,
+    ClientOrderTemplate,
+    CoreMaterial,
+    CoreSpecification,
+    FilmCutWidth,
+    InventoryCategory,
+    InventoryItem,
+    RawMaterial,
+} from '@/lib/types';
+import {
+    BarChart3,
+    Building2,
+    Download,
+    Edit2,
+    Loader2,
+    Mail,
+    MapPin,
+    Phone,
+    Plus,
+    Repeat,
+    Search,
+    Upload,
+    UserCheck,
+    Users,
+} from 'lucide-react';
 import { toast } from 'sonner';
+import ClientTemplateModal from '@/components/admin/clients/client-template-modal';
+import TemplatesImportModal from '@/components/admin/clients/templates-import-modal';
+import ClientsDashboard from '@/components/admin/clients/clients-dashboard';
+import type { InventoryCatalog } from '@/components/admin/orders/order-products-editor';
+import { TEMPLATE_CSV_HEADERS, buildTemplateRows } from '@/lib/client-templates';
+import { downloadCSV } from '@/components/admin/suppliers/utils';
 
 const EMPTY_FORM = {
     business_name: '',
@@ -36,6 +66,52 @@ export default function ClientsPanel() {
     const [editingClient, setEditingClient] = useState<Client | null>(null);
 
     const [form, setForm] = useState(EMPTY_FORM);
+    const [view, setView] = useState<'directory' | 'stats'>('directory');
+
+    // Pedido habitual: catálogo de inventario y líneas por cliente
+    const [templates, setTemplates] = useState<ClientOrderTemplate[]>([]);
+    const [raws, setRaws] = useState<RawMaterial[]>([]);
+    const [cores, setCores] = useState<CoreSpecification[]>([]);
+    const [coreMaterials, setCoreMaterials] = useState<CoreMaterial[]>([]);
+    const [items, setItems] = useState<InventoryItem[]>([]);
+    const [categories, setCategories] = useState<InventoryCategory[]>([]);
+    const [cuts, setCuts] = useState<FilmCutWidth[]>([]);
+    const [templateClient, setTemplateClient] = useState<Client | null>(null);
+    const [showImport, setShowImport] = useState(false);
+
+    const fetchCatalog = async () => {
+        const [t, r, c, m, i, cat, cu] = await Promise.all([
+            supabase.from('client_order_templates').select('*').order('position'),
+            supabase.from('raw_materials').select('*').order('width_cm'),
+            supabase.from('core_specifications').select('*').order('length_cm'),
+            supabase.from('core_materials').select('*').order('name'),
+            supabase.from('inventory_items').select('*').order('name'),
+            supabase.from('inventory_categories').select('*').order('display_order'),
+            supabase.from('film_cut_widths').select('*'),
+        ]);
+        setTemplates((t.data || []) as ClientOrderTemplate[]);
+        setRaws((r.data || []) as RawMaterial[]);
+        setCores((c.data || []) as CoreSpecification[]);
+        setCoreMaterials((m.data || []) as CoreMaterial[]);
+        setItems((i.data || []) as InventoryItem[]);
+        setCategories((cat.data || []) as InventoryCategory[]);
+        setCuts((cu.data || []) as FilmCutWidth[]);
+    };
+
+    const catalog: InventoryCatalog = useMemo(
+        () => ({ items, categories, rawMaterials: raws, cores, coreMaterials }),
+        [items, categories, raws, cores, coreMaterials]
+    );
+    const templateCount = (clientId: string) => templates.filter((t) => t.client_id === clientId).length;
+
+    const exportTemplates = () => {
+        const rows = buildTemplateRows(clients, templates, { raws, cores, coreMaterials, items });
+        if (rows.length === 0) {
+            // Archivo de ejemplo con los clientes (sin líneas) para empezar a llenarlo
+            clients.forEach((c) => rows.push([c.nit_rut || '', c.business_name, '', '', '', '', '', '', '', '']));
+        }
+        downloadCSV(`pedidos_habituales_${new Date().toLocaleDateString('en-CA')}.csv`, TEMPLATE_CSV_HEADERS, rows);
+    };
 
     const fetchClients = async () => {
         try {
@@ -56,6 +132,7 @@ export default function ClientsPanel() {
 
     useEffect(() => {
         fetchClients();
+        fetchCatalog();
     }, []);
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -125,13 +202,48 @@ export default function ClientsPanel() {
             {/* Header del módulo */}
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                    <h2 className="font-heading text-2xl font-bold text-[#2E4040]">
-                        Directorio de Clientes
-                    </h2>
+                    <h2 className="font-heading text-2xl font-bold text-[#2E4040]">Clientes</h2>
                     <p className="text-sm text-[#949E97]">
-                        {clients.length} clientes registrados en el CRM (Supabase)
+                        {clients.length} clientes · {new Set(templates.map((t) => t.client_id)).size} con pedido habitual
                     </p>
                 </div>
+                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex rounded-lg border border-[#C8CDC9] bg-white p-0.5">
+                    {(
+                        [
+                            ['directory', 'Directorio', Users],
+                            ['stats', 'Estadísticas', BarChart3],
+                        ] as const
+                    ).map(([k, label, Icon]) => (
+                        <button
+                            key={k}
+                            onClick={() => setView(k)}
+                            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                                view === k ? 'bg-[#2E4040] text-white' : 'text-[#2E4040] hover:bg-[#C8CDC9]/20'
+                            }`}
+                        >
+                            <Icon className="h-3.5 w-3.5" /> {label}
+                        </button>
+                    ))}
+                </div>
+                {view === 'directory' && (
+                    <>
+                        <button
+                            onClick={exportTemplates}
+                            className="flex items-center gap-1.5 rounded-md border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] hover:bg-[#C8CDC9]/20"
+                            title="Descarga el pedido habitual de todos los clientes en CSV (Excel)"
+                        >
+                            <Download className="h-3.5 w-3.5" /> Exportar pedidos habituales
+                        </button>
+                        <button
+                            onClick={() => setShowImport(true)}
+                            className="flex items-center gap-1.5 rounded-md border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] hover:bg-[#C8CDC9]/20"
+                            title="Carga masiva del pedido habitual desde CSV"
+                        >
+                            <Upload className="h-3.5 w-3.5" /> Importar
+                        </button>
+                    </>
+                )}
                 <button
                     onClick={() => {
                         setEditingClient(null);
@@ -142,7 +254,13 @@ export default function ClientsPanel() {
                 >
                     <Plus className="h-4 w-4" /> Nuevo Cliente
                 </button>
+                </div>
             </div>
+
+            {view === 'stats' && <ClientsDashboard />}
+
+            {view === 'directory' && (
+            <>
 
             {/* Buscador */}
             <div className="relative max-w-md">
@@ -248,10 +366,52 @@ export default function ClientsPanel() {
                                         </span>
                                     )}
                                 </div>
+                                <button
+                                    onClick={() => setTemplateClient(client)}
+                                    className="mt-1 flex w-full items-center justify-between rounded-md border border-[#C8CDC9] px-2.5 py-1.5 text-[11px] font-semibold text-[#2E4040] hover:border-[#3F8346] hover:bg-[#3F8346]/5"
+                                >
+                                    <span className="flex items-center gap-1.5">
+                                        <Repeat className="h-3.5 w-3.5 text-[#3F8346]" />
+                                        Pedido habitual
+                                    </span>
+                                    <span className="font-normal text-[#949E97]">
+                                        {templateCount(client.id) > 0 ? `${templateCount(client.id)} línea(s)` : 'Sin configurar'}
+                                        {client.reorder_days ? ` · cada ${client.reorder_days} d` : ''}
+                                    </span>
+                                </button>
                             </div>
                         </div>
                     ))}
                 </div>
+            )}
+
+            </>
+            )}
+
+            {templateClient && (
+                <ClientTemplateModal
+                    client={templateClient}
+                    catalog={catalog}
+                    cuts={cuts}
+                    onClose={() => setTemplateClient(null)}
+                    onSaved={() => {
+                        setTemplateClient(null);
+                        fetchCatalog();
+                        fetchClients();
+                    }}
+                />
+            )}
+            {showImport && (
+                <TemplatesImportModal
+                    clients={clients}
+                    catalog={{ raws, cores, coreMaterials, items }}
+                    onClose={() => setShowImport(false)}
+                    onDone={() => {
+                        setShowImport(false);
+                        fetchCatalog();
+                        fetchClients();
+                    }}
+                />
             )}
 
             {/* Modal de Alta de Cliente */}

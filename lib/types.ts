@@ -71,6 +71,8 @@ export type Client = {
     payment_terms_days: number;
     /** Cupo de crédito en COP (null = sin límite) */
     credit_limit: number | null;
+    /** Cada cuántos días suele pedir (alerta de recompra); null = sin frecuencia */
+    reorder_days?: number | null;
     created_by?: string | null;
     created_at: string;
     updated_at: string;
@@ -259,6 +261,25 @@ export type CoreMaterial = {
     /** Costo promedio ponderado por kg */
     cost_per_kg: number;
     min_stock_alert_kg: number;
+    notes: string | null;
+    created_at: string;
+    updated_at: string;
+};
+
+/** Línea del pedido habitual de un cliente (client_order_templates) */
+export type ClientOrderTemplate = {
+    id: string;
+    client_id: string;
+    position: number;
+    kind: 'stretch' | 'insumo' | 'bobina' | 'core' | 'material_core';
+    raw_material_id: string | null;
+    core_id: string | null;
+    inventory_item_id: string | null;
+    core_material_id: string | null;
+    /** Solo stretch: peso total por rollo (g) */
+    weight_grams: number | null;
+    quantity: number;
+    unit_price: number;
     notes: string | null;
     created_at: string;
     updated_at: string;
