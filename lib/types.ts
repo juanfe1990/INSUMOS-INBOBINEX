@@ -384,6 +384,7 @@ export type InventoryTransaction = {
 export type SupplierCategory =
     | 'materia_prima'
     | 'cores_tubos'
+    | 'cintas'
     | 'insumos'
     | 'servicios'
     | 'transporte'

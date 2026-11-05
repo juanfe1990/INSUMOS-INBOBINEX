@@ -102,7 +102,7 @@ c:\Users\jubla\Desktop\Inbobinex\
 - `order_priority`: `'baja' | 'normal' | 'alta' | 'urgente'`
 - `film_type`: `'manual' | 'maquina' | 'preestirado' | 'color_negro' | 'color_azul' | 'otro'`
 - `inventory_movement_type`: `'entrada_compra' | 'produccion_core' | 'consumo_pedido' | 'merma_desperdicio' | 'ajuste_manual' | 'anulacion_compra' | 'consumo_armado_core' | 'salida_venta' | 'consumo_interno'`
-- `supplier_category`: `'materia_prima' | 'cores_tubos' | 'insumos' | 'servicios' | 'transporte' | 'otro'`
+- `supplier_category`: `'materia_prima' | 'cores_tubos' | 'cintas' | 'insumos' | 'servicios' | 'transporte' | 'otro'`
 - `purchase_invoice_status`: `'pendiente' | 'parcial' | 'pagada' | 'anulada'`
 - `payment_method`: `'transferencia' | 'efectivo' | 'cheque' | 'tarjeta' | 'otro'`
 - `expense_group`: `'operacional' | 'no_operacional' | 'financiero'`

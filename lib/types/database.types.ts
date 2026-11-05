@@ -21,6 +21,7 @@ export type FilmType = 'manual' | 'maquina' | 'preestirado' | 'color_negro' | 'c
 export type SupplierCategory =
   | 'materia_prima'
   | 'cores_tubos'
+  | 'cintas'
   | 'insumos'
   | 'servicios'
   | 'transporte'

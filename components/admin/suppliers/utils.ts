@@ -13,6 +13,7 @@ export const LABEL = 'block text-[10px] font-semibold text-[#949E97] mb-1';
 export const CATEGORY_LABELS: Record<SupplierCategory, string> = {
     materia_prima: 'Materia prima (bobinas)',
     cores_tubos: 'Cores / tubos',
+    cintas: 'Cintas',
     insumos: 'Insumos y empaque',
     servicios: 'Servicios',
     transporte: 'Transporte',
