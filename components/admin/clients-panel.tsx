@@ -13,7 +13,6 @@ import type {
     RawMaterial,
 } from '@/lib/types';
 import {
-    BarChart3,
     Building2,
     Download,
     Edit2,
@@ -26,12 +25,10 @@ import {
     Search,
     Upload,
     UserCheck,
-    Users,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import ClientTemplateModal from '@/components/admin/clients/client-template-modal';
 import TemplatesImportModal from '@/components/admin/clients/templates-import-modal';
-import ClientsDashboard from '@/components/admin/clients/clients-dashboard';
 import type { InventoryCatalog } from '@/components/admin/orders/order-products-editor';
 import { TEMPLATE_CSV_HEADERS, buildTemplateRows } from '@/lib/client-templates';
 import { downloadCSV } from '@/components/admin/suppliers/utils';
@@ -66,7 +63,6 @@ export default function ClientsPanel() {
     const [editingClient, setEditingClient] = useState<Client | null>(null);
 
     const [form, setForm] = useState(EMPTY_FORM);
-    const [view, setView] = useState<'directory' | 'stats'>('directory');
 
     // Pedido habitual: catálogo de inventario y líneas por cliente
     const [templates, setTemplates] = useState<ClientOrderTemplate[]>([]);
@@ -208,26 +204,6 @@ export default function ClientsPanel() {
                     </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                <div className="flex rounded-lg border border-[#C8CDC9] bg-white p-0.5">
-                    {(
-                        [
-                            ['directory', 'Directorio', Users],
-                            ['stats', 'Estadísticas', BarChart3],
-                        ] as const
-                    ).map(([k, label, Icon]) => (
-                        <button
-                            key={k}
-                            onClick={() => setView(k)}
-                            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
-                                view === k ? 'bg-[#2E4040] text-white' : 'text-[#2E4040] hover:bg-[#C8CDC9]/20'
-                            }`}
-                        >
-                            <Icon className="h-3.5 w-3.5" /> {label}
-                        </button>
-                    ))}
-                </div>
-                {view === 'directory' && (
-                    <>
                         <button
                             onClick={exportTemplates}
                             className="flex items-center gap-1.5 rounded-md border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] hover:bg-[#C8CDC9]/20"
@@ -242,8 +218,6 @@ export default function ClientsPanel() {
                         >
                             <Upload className="h-3.5 w-3.5" /> Importar
                         </button>
-                    </>
-                )}
                 <button
                     onClick={() => {
                         setEditingClient(null);
@@ -257,10 +231,7 @@ export default function ClientsPanel() {
                 </div>
             </div>
 
-            {view === 'stats' && <ClientsDashboard />}
 
-            {view === 'directory' && (
-            <>
 
             {/* Buscador */}
             <div className="relative max-w-md">
@@ -383,9 +354,6 @@ export default function ClientsPanel() {
                         </div>
                     ))}
                 </div>
-            )}
-
-            </>
             )}
 
             {templateClient && (

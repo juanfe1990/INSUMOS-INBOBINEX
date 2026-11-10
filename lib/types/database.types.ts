@@ -35,7 +35,7 @@ export type ExpenseStatus = 'pendiente' | 'pagado' | 'anulado';
 export type TreasuryAccountType = 'caja_general' | 'banco' | 'caja_menor';
 export type TreasuryDirection = 'ingreso' | 'egreso';
 export type TreasuryMovementType =
-  | 'saldo_inicial' | 'cobro_cliente' | 'pago_proveedor' | 'pago_gasto'
+  | 'saldo_inicial' | 'cobro_cliente' | 'pago_proveedor' | 'pago_gasto' | 'pago_mano_obra'
   | 'transferencia_entrada' | 'transferencia_salida' | 'otro_ingreso' | 'otro_egreso' | 'ajuste';
 export type PurchaseItemType = 'bobina' | 'core' | 'insumo' | 'otro';
 
@@ -295,6 +295,110 @@ export interface Database {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [];
+      };
+      workers: {
+        Row: {
+          id: string;
+          full_name: string;
+          document_id: string | null;
+          phone: string | null;
+          work_type: string;
+          bank_name: string | null;
+          bank_account: string | null;
+          notes: string | null;
+          is_active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          full_name: string;
+          document_id?: string | null;
+          phone?: string | null;
+          work_type?: string;
+          bank_name?: string | null;
+          bank_account?: string | null;
+          notes?: string | null;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          full_name?: string;
+          document_id?: string | null;
+          phone?: string | null;
+          work_type?: string;
+          bank_name?: string | null;
+          bank_account?: string | null;
+          notes?: string | null;
+          is_active?: boolean;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      worker_earnings: {
+        Row: {
+          id: string;
+          worker_id: string | null;
+          work_date: string;
+          kind: string;
+          assembly_labor_id: string | null;
+          core_id: string | null;
+          description: string;
+          units: number | null;
+          rate: number | null;
+          amount: number;
+          payment_id: string | null;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      worker_payments: {
+        Row: {
+          id: string;
+          batch_id: string;
+          worker_id: string;
+          payment_date: string;
+          amount: number;
+          account_id: string;
+          method: PaymentMethod;
+          reference: string | null;
+          notes: string | null;
+          period_from: string | null;
+          period_to: string | null;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      core_assembly_labor: {
+        Row: {
+          id: string;
+          assembly_date: string;
+          core_id: string | null;
+          core_name: string;
+          length_cm: number;
+          units: number;
+          assembly_cost_per_unit: number;
+          assembly_total: number;
+          has_cardboard_part: boolean;
+          cardboard_cut_cost_per_unit: number;
+          cardboard_cut_total: number;
+          material_cost: number;
+          kg_used: number;
+          notes: string | null;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: never;
+        Update: never;
         Relationships: [];
       };
       client_order_templates: {
@@ -1074,6 +1178,8 @@ export interface Database {
           min_stock_alert_units: number;
           core_material_id: string | null;
           labor_cost_per_unit: number;
+          has_cardboard_part: boolean;
+          cardboard_cut_cost_per_unit: number;
           created_at: string;
           updated_at: string;
         };
@@ -1087,6 +1193,8 @@ export interface Database {
           min_stock_alert_units?: number;
           core_material_id?: string | null;
           labor_cost_per_unit?: number;
+          has_cardboard_part?: boolean;
+          cardboard_cut_cost_per_unit?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -1100,6 +1208,8 @@ export interface Database {
           min_stock_alert_units?: number;
           core_material_id?: string | null;
           labor_cost_per_unit?: number;
+          has_cardboard_part?: boolean;
+          cardboard_cut_cost_per_unit?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -1379,10 +1489,6 @@ export interface Database {
         Args: { p_invoice_id: string; p_reason: string };
         Returns: undefined;
       };
-      register_core_assembly: {
-        Args: { p_core_id: string; p_units: number; p_notes?: string };
-        Returns: Json;
-      };
       register_treasury_movement: {
         Args: {
           p_account_id: string;
@@ -1431,6 +1537,45 @@ export interface Database {
       adjust_core_stock: {
         Args: { p_core_id: string; p_new_units: number; p_notes?: string };
         Returns: undefined;
+      };
+      register_core_assembly: {
+        Args: { p_core_id: string; p_units: number; p_notes?: string; p_workers?: Json; p_date?: string };
+        Returns: Json;
+      };
+      add_worker_earning: {
+        Args: {
+          p_worker_id: string;
+          p_date: string;
+          p_kind: string;
+          p_description: string;
+          p_amount: number;
+          p_units?: number;
+          p_rate?: number;
+        };
+        Returns: string;
+      };
+      reassign_worker_earning: {
+        Args: { p_id: string; p_splits: Json };
+        Returns: number;
+      };
+      delete_worker_earning: {
+        Args: { p_id: string };
+        Returns: undefined;
+      };
+      pay_worker_earnings: {
+        Args: {
+          p_earning_ids: string[];
+          p_account_id: string;
+          p_date?: string;
+          p_method?: PaymentMethod;
+          p_reference?: string;
+          p_notes?: string;
+        };
+        Returns: Json;
+      };
+      annul_worker_payment_batch: {
+        Args: { p_batch_id: string };
+        Returns: number;
       };
       replace_client_templates: {
         Args: { p_data: Json };

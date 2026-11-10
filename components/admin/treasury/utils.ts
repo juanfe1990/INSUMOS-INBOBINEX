@@ -25,6 +25,7 @@ export const MOVEMENT_LABELS: Record<TreasuryMovementType, string> = {
     cobro_cliente: 'Cobro a cliente',
     pago_proveedor: 'Pago a proveedor',
     pago_gasto: 'Pago de gasto',
+    pago_mano_obra: 'Pago mano de obra',
     transferencia_entrada: 'Transferencia recibida',
     transferencia_salida: 'Transferencia enviada',
     otro_ingreso: 'Otro ingreso',

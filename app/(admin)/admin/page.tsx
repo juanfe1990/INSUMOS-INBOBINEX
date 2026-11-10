@@ -10,6 +10,7 @@ import AdminSidebar, { type AdminTab } from '@/components/admin/admin-sidebar';
 import ExpensesPanel from '@/components/admin/expenses/expenses-panel';
 import TreasuryPanel from '@/components/admin/treasury/treasury-panel';
 import FinancePanel from '@/components/admin/finance/finance-panel';
+import WorkersPanel from '@/components/admin/workers/workers-panel';
 import { useConfirm } from '@/components/admin/confirm-dialog';
 import {
     Image as ImageIcon,
@@ -46,7 +47,7 @@ const emptyProductForm: ProductFormState = {
 
 export default function AdminPage() {
     // --- Pestaña Activa ---
-    const [activeTab, setActiveTab] = useState<AdminTab>('orders');
+    const [activeTab, setActiveTab] = useState<AdminTab>('finance');
 
     // --- Estados Generales Catálogo Web (Firebase) ---
     const [products, setProducts] = useState<Product[]>([]);
@@ -349,6 +350,7 @@ export default function AdminPage() {
             {activeTab === 'finance' && <FinancePanel />}
             {activeTab === 'clients' && <ClientsPanel />}
             {activeTab === 'inventory' && <InventoryPanel />}
+            {activeTab === 'workers' && <WorkersPanel />}
             {activeTab === 'suppliers' && <SuppliersPanel />}
 
             {/* --- VISTA CATÁLOGO WEB (FIREBASE) --- */}

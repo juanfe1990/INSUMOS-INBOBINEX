@@ -16,6 +16,10 @@ import type {
 import GeneralInventory from '@/components/admin/inventory/general-inventory';
 import FilmCutsManager from '@/components/admin/inventory/film-cuts-manager';
 import WastePanel from '@/components/admin/inventory/waste-panel';
+import CardboardCutField from '@/components/admin/inventory/cardboard-cut-field';
+import CoreLaborSummary from '@/components/admin/inventory/core-labor-summary';
+import WorkerSplitEditor, { equalSplit, splitSum, type WorkerSplit } from '@/components/admin/workers/worker-split-editor';
+import type { Worker } from '@/lib/types';
 import InvoiceFormModal from '@/components/admin/suppliers/invoice-form-modal';
 import {
     Package,
@@ -122,10 +126,15 @@ function coresFromKg(kg: number, core: CoreSpecification): number | null {
     return Math.floor((kg * 1000) / w);
 }
 
-/** Costo estimado de armar 1 core: material (kg x costo/kg) + mano de obra */
+/** Corte de cartón por core (solo si la medida lleva parte de cartón) */
+function cardboardCut(core: Pick<CoreSpecification, 'has_cardboard_part' | 'cardboard_cut_cost_per_unit'>): number {
+    return core.has_cardboard_part ? Number(core.cardboard_cut_cost_per_unit || 0) : 0;
+}
+
+/** Costo estimado de armar 1 core: material (kg x costo/kg) + armado + corte de cartón (si aplica) */
 function estimateCoreUnitCost(core: CoreSpecification, material: CoreMaterial | null | undefined): number {
     const materialCost = material ? (Number(core.weight_grams || 0) / 1000) * Number(material.cost_per_kg || 0) : 0;
-    return materialCost + Number(core.labor_cost_per_unit || 0);
+    return materialCost + Number(core.labor_cost_per_unit || 0) + cardboardCut(core);
 }
 
 const DELETE_NO_PERMISSION =
@@ -181,6 +190,11 @@ export default function InventoryPanel() {
     const [selectedCoreForEntry, setSelectedCoreForEntry] = useState<CoreSpecification | null>(null);
     const [coreEntryUnits, setCoreEntryUnits] = useState<string>('');
     const [coreEntryNotes, setCoreEntryNotes] = useState<string>('');
+    // Personas que armaron / cortaron el cartón y fecha del trabajo
+    const [coreWorkers, setCoreWorkers] = useState<Worker[]>([]);
+    const [coreEntrySplit, setCoreEntrySplit] = useState<WorkerSplit[]>([]);
+    const [coreEntryCutSplit, setCoreEntryCutSplit] = useState<WorkerSplit[]>([]);
+    const [coreEntryDate, setCoreEntryDate] = useState(() => new Date().toLocaleDateString('en-CA'));
 
     // Material de cores (kg)
     const [materialForm, setMaterialForm] = useState<{
@@ -198,6 +212,9 @@ export default function InventoryPanel() {
     const [editCoreCost, setEditCoreCost] = useState<string>('');
     const [editCoreWeight, setEditCoreWeight] = useState<string>('');
     const [editCoreLabor, setEditCoreLabor] = useState<string>('');
+    const [editCoreHasCardboard, setEditCoreHasCardboard] = useState(false);
+    const [editCoreCutCost, setEditCoreCutCost] = useState('');
+    const [laborRefresh, setLaborRefresh] = useState(0);
     const [editCoreMaterialId, setEditCoreMaterialId] = useState<string>('');
 
     const [showNewCoreModal, setShowNewCoreModal] = useState(false);
@@ -205,11 +222,32 @@ export default function InventoryPanel() {
     const [newCoreLength, setNewCoreLength] = useState('50');
     const [newCoreWeight, setNewCoreWeight] = useState('');
     const [newCoreLabor, setNewCoreLabor] = useState('');
+    const [newCoreHasCardboard, setNewCoreHasCardboard] = useState(false);
+    const [newCoreCutCost, setNewCoreCutCost] = useState('');
     const [newCoreMaterialId, setNewCoreMaterialId] = useState('');
     const [newCoreMinStock, setNewCoreMinStock] = useState('30');
 
     const [saving, setSaving] = useState(false);
     const [confirmDialog, confirm] = useConfirm();
+
+    useEffect(() => {
+        supabase
+            .from('workers')
+            .select('*')
+            .eq('is_active', true)
+            .in('work_type', ['cores', 'ambos'])
+            .order('full_name')
+            .then(({ data }) => setCoreWorkers((data || []) as Worker[]));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // Al cambiar la cantidad, se reparte de nuevo en partes iguales entre las personas elegidas
+    const changeCoreUnits = (v: string) => {
+        setCoreEntryUnits(v);
+        const n = Math.max(0, Math.floor(Number(v) || 0));
+        setCoreEntrySplit((s) => equalSplit(s.map((x) => x.worker_id), n));
+        setCoreEntryCutSplit((s) => equalSplit(s.map((x) => x.worker_id), n));
+    };
 
     // Cargar información completa de inventario
     const fetchInventoryData = async () => {
@@ -455,6 +493,20 @@ export default function InventoryPanel() {
             toast.error('Define primero el peso promedio del core armado de esta medida');
             return;
         }
+        if (coreEntrySplit.length > 0 && splitSum(coreEntrySplit) !== units) {
+            toast.error(`Armado: los cores por persona deben sumar ${units}`);
+            return;
+        }
+        if (coreEntryCutSplit.length > 0 && splitSum(coreEntryCutSplit) !== units) {
+            toast.error(`Corte de cartón: los cores por persona deben sumar ${units}`);
+            return;
+        }
+        const workersPayload = [
+            ...coreEntrySplit.map((x) => ({ worker_id: x.worker_id, trade: 'armado', units: Number(x.value) })),
+            ...(selectedCoreForEntry.has_cardboard_part
+                ? coreEntryCutSplit.map((x) => ({ worker_id: x.worker_id, trade: 'corte_carton', units: Number(x.value) }))
+                : []),
+        ].filter((x) => x.units > 0);
 
         try {
             setSaving(true);
@@ -462,17 +514,24 @@ export default function InventoryPanel() {
                 p_core_id: selectedCoreForEntry.id,
                 p_units: units,
                 ...(coreEntryNotes.trim() ? { p_notes: coreEntryNotes.trim() } : {}),
+                p_workers: workersPayload,
+                p_date: coreEntryDate,
             });
             if (error) throw error;
 
-            const r = (data || {}) as { kg_used?: number; unit_cost?: number };
+            const r = (data || {}) as { kg_used?: number; unit_cost?: number; unassigned?: number };
             toast.success(
                 `+${units} cores de ${selectedCoreForEntry.length_cm} cm · ${fmtKg(Number(r.kg_used || 0))} kg de material · ${fmtCOP(Number(r.unit_cost || 0))} c/u`
             );
+            if (Number(r.unassigned || 0) > 0)
+                toast.info('La mano de obra quedó "sin asignar": asígnala en Trabajadores → Por pagar.');
             setShowCoreModal(false);
             setCoreEntryUnits('');
             setCoreEntryNotes('');
+            setCoreEntrySplit([]);
+            setCoreEntryCutSplit([]);
             fetchInventoryData();
+            setLaborRefresh((n) => n + 1);
         } catch (err: any) {
             toast.error('Error registrando armado: ' + (err.message || 'Error'));
         } finally {
@@ -491,7 +550,7 @@ export default function InventoryPanel() {
             toast.error('Ingresa un peso promedio válido en gramos');
             return;
         }
-        if (Number(editCoreLabor || 0) < 0) {
+        if (Number(editCoreLabor || 0) < 0 || Number(editCoreCutCost || 0) < 0) {
             toast.error('La mano de obra no puede ser negativa');
             return;
         }
@@ -509,6 +568,8 @@ export default function InventoryPanel() {
                     standard_cost: Number(editCoreCost),
                     weight_grams: weight,
                     labor_cost_per_unit: Number(editCoreLabor || 0),
+                    has_cardboard_part: editCoreHasCardboard,
+                    cardboard_cut_cost_per_unit: editCoreHasCardboard ? Number(editCoreCutCost || 0) : 0,
                     core_material_id: editCoreMaterialId || null,
                     updated_at: new Date().toISOString(),
                 })
@@ -574,12 +635,20 @@ export default function InventoryPanel() {
             setSaving(true);
             const material = coreMaterials.find((m) => m.id === newCoreMaterialId);
             const labor = Number(newCoreLabor || 0);
-            const draft = { weight_grams: Number(newCoreWeight), labor_cost_per_unit: labor } as CoreSpecification;
+            const cutCost = newCoreHasCardboard ? Number(newCoreCutCost || 0) : 0;
+            const draft = {
+                weight_grams: Number(newCoreWeight),
+                labor_cost_per_unit: labor,
+                has_cardboard_part: newCoreHasCardboard,
+                cardboard_cut_cost_per_unit: cutCost,
+            } as CoreSpecification;
             const { error } = await supabase.from('core_specifications').insert({
                 name: newCoreName.trim(),
                 length_cm: newLength,
                 weight_grams: Number(newCoreWeight),
                 labor_cost_per_unit: labor,
+                has_cardboard_part: newCoreHasCardboard,
+                cardboard_cut_cost_per_unit: cutCost,
                 core_material_id: newCoreMaterialId,
                 // Costo inicial estimado; cada armado lo recalcula por promedio ponderado
                 standard_cost: Math.round(estimateCoreUnitCost(draft, material)),
@@ -592,6 +661,8 @@ export default function InventoryPanel() {
             setNewCoreName('');
             setNewCoreWeight('');
             setNewCoreLabor('');
+            setNewCoreHasCardboard(false);
+            setNewCoreCutCost('');
             fetchInventoryData();
         } catch (err: any) {
             toast.error(
@@ -1363,8 +1434,8 @@ export default function InventoryPanel() {
                                 <div className="mb-2">
                                     <h3 className="text-sm font-bold text-[#2E4040]">2. Cores armados por medida (unidades)</h3>
                                     <p className="text-[11px] text-[#949E97]">
-                                        Costo por core = peso × costo/kg del material + mano de obra. Se descuenta 1 core por
-                                        rollo al despachar un pedido.
+                                        Costo por core = peso × costo/kg del material + armado + corte de cartón (si la medida
+                                        lleva parte de cartón). Se descuenta 1 core por rollo al despachar un pedido.
                                     </p>
                                 </div>
                                 {cores.length === 0 ? (
@@ -1442,11 +1513,22 @@ export default function InventoryPanel() {
                                                                 )}
                                                             </div>
                                                             <div>
-                                                                <span className="text-[#949E97]">Mano de obra: </span>
+                                                                <span className="text-[#949E97]">Armado: </span>
                                                                 <span className="font-bold text-[#2E4040]">
                                                                     {fmtCOP(Number(c.labor_cost_per_unit || 0))}
                                                                 </span>
                                                             </div>
+                                                            {c.has_cardboard_part && (
+                                                                <div className="col-span-2">
+                                                                    <span className="text-[#949E97]">Corte de cartón: </span>
+                                                                    <span className="font-bold text-[#2E4040]">
+                                                                        {fmtCOP(Number(c.cardboard_cut_cost_per_unit || 0))}
+                                                                    </span>
+                                                                    <span className="ml-1 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                                                                        Cartón + plega
+                                                                    </span>
+                                                                </div>
+                                                            )}
                                                             <div className="col-span-2 text-[11px] text-[#949E97]">
                                                                 Con el material disponible se pueden armar{' '}
                                                                 <b className="text-[#2E4040]">
@@ -1465,6 +1547,10 @@ export default function InventoryPanel() {
                                                                     setEditCoreCost(String(cost));
                                                                     setEditCoreWeight(String(weight));
                                                                     setEditCoreLabor(String(Number(c.labor_cost_per_unit || 0)));
+                                                                    setEditCoreHasCardboard(!!c.has_cardboard_part);
+                                                                    setEditCoreCutCost(
+                                                                        c.has_cardboard_part ? String(Number(c.cardboard_cut_cost_per_unit || 0)) : ''
+                                                                    );
                                                                     setEditCoreMaterialId(c.core_material_id || '');
                                                                     setShowEditCoreCostModal(true);
                                                                 }}
@@ -1511,6 +1597,9 @@ export default function InventoryPanel() {
                                     </div>
                                 )}
                             </div>
+
+                            {/* ---------- 3. Mano de obra por pagar ---------- */}
+                            {profile?.role === 'admin' && <CoreLaborSummary refreshKey={laborRefresh} />}
                         </>
                     )}
                 </div>
@@ -2032,7 +2121,8 @@ export default function InventoryPanel() {
                 const available = Number(material?.current_stock_kg || 0);
                 const materialCost = kgUsed * Number(material?.cost_per_kg || 0);
                 const laborCost = units * Number(c.labor_cost_per_unit || 0);
-                const unitCost = units > 0 ? (materialCost + laborCost) / units : 0;
+                const cutCost = units * cardboardCut(c);
+                const unitCost = units > 0 ? (materialCost + laborCost + cutCost) / units : 0;
                 const missingWeight = weight <= 0;
                 const insufficient = !!material && kgUsed > available;
                 const blocked = !material || missingWeight || insufficient || units <= 0;
@@ -2080,7 +2170,7 @@ export default function InventoryPanel() {
                                             min="1"
                                             step="1"
                                             value={coreEntryUnits}
-                                            onChange={(e) => setCoreEntryUnits(e.target.value)}
+                                            onChange={(e) => changeCoreUnits(e.target.value)}
                                             placeholder="Ej: 100"
                                             className="w-full rounded-lg border border-[#C8CDC9] bg-white px-3 py-2 text-sm font-bold text-[#2E4040] focus:border-[#3F8346] focus:outline-none"
                                         />
@@ -2115,9 +2205,15 @@ export default function InventoryPanel() {
                                                 <span>{fmtCOP(materialCost)}</span>
                                             </div>
                                             <div className="flex justify-between">
-                                                <span>Mano de obra:</span>
+                                                <span>Armado:</span>
                                                 <span>{fmtCOP(laborCost)}</span>
                                             </div>
+                                            {cutCost > 0 && (
+                                                <div className="flex justify-between">
+                                                    <span>Corte de cartón:</span>
+                                                    <span>{fmtCOP(cutCost)}</span>
+                                                </div>
+                                            )}
                                             <div className="flex justify-between border-t border-current/20 pt-1 font-bold">
                                                 <span>Costo por core:</span>
                                                 <span>{fmtCOP(unitCost)}</span>
@@ -2136,6 +2232,41 @@ export default function InventoryPanel() {
                                             )}
                                         </div>
                                     )}
+                                </div>
+
+                                <div className="space-y-3 rounded-lg border border-[#C8CDC9] p-3">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <p className="text-xs font-bold text-[#2E4040]">¿Quién trabajó?</p>
+                                        <input
+                                            type="date"
+                                            value={coreEntryDate}
+                                            max={new Date().toLocaleDateString('en-CA')}
+                                            onChange={(e) => setCoreEntryDate(e.target.value)}
+                                            className="rounded border border-[#C8CDC9] px-2 py-1 text-xs focus:border-[#3F8346] focus:outline-none"
+                                            title="Fecha en que se hizo el trabajo"
+                                        />
+                                    </div>
+                                    <WorkerSplitEditor
+                                        workers={coreWorkers}
+                                        total={units}
+                                        value={coreEntrySplit}
+                                        onChange={setCoreEntrySplit}
+                                        rate={Number(c.labor_cost_per_unit || 0)}
+                                        title={`Armado (${fmtCOP(Number(c.labor_cost_per_unit || 0))} por core)`}
+                                    />
+                                    {c.has_cardboard_part && (
+                                        <WorkerSplitEditor
+                                            workers={coreWorkers}
+                                            total={units}
+                                            value={coreEntryCutSplit}
+                                            onChange={setCoreEntryCutSplit}
+                                            rate={Number(c.cardboard_cut_cost_per_unit || 0)}
+                                            title={`Corte de cartón (${fmtCOP(Number(c.cardboard_cut_cost_per_unit || 0))} por core)`}
+                                        />
+                                    )}
+                                    <p className="text-[10px] text-[#949E97]">
+                                        Si no eliges personas, la mano de obra queda &quot;sin asignar&quot; en Trabajadores para asignarla después.
+                                    </p>
                                 </div>
 
                                 <div>
@@ -2181,6 +2312,8 @@ export default function InventoryPanel() {
                         ...editingCore,
                         weight_grams: Number(editCoreWeight || 0),
                         labor_cost_per_unit: Number(editCoreLabor || 0),
+                        has_cardboard_part: editCoreHasCardboard,
+                        cardboard_cut_cost_per_unit: Number(editCoreCutCost || 0),
                     },
                     material
                 );
@@ -2234,7 +2367,7 @@ export default function InventoryPanel() {
                                     </div>
                                     <div>
                                         <label className="mb-1 block text-xs font-semibold text-[#2E4040]">
-                                            Mano de obra / core ($):
+                                            Armado / core ($):
                                         </label>
                                         <input
                                             type="number"
@@ -2251,6 +2384,13 @@ export default function InventoryPanel() {
                                     El peso convierte kg de material en unidades y se resta del peso del rollo para calcular la
                                     película. Los pedidos ya creados conservan el peso que tenían.
                                 </p>
+
+                                <CardboardCutField
+                                    enabled={editCoreHasCardboard}
+                                    onEnabledChange={setEditCoreHasCardboard}
+                                    cost={editCoreCutCost}
+                                    onCostChange={setEditCoreCutCost}
+                                />
 
                                 <div className="rounded-lg bg-[#F8F9FA] p-3 text-xs text-[#2E4040]">
                                     Costo estimado del próximo armado: <b>{fmtCOP(estimate)}</b> por core
@@ -2378,7 +2518,7 @@ export default function InventoryPanel() {
                                     </div>
                                     <div>
                                         <label className="mb-1 block text-xs font-semibold text-[#2E4040]">
-                                            Mano de obra / core ($):
+                                            Armado / core ($):
                                         </label>
                                         <input
                                             type="number"
@@ -2395,6 +2535,13 @@ export default function InventoryPanel() {
                                     Pesa varios cores ya armados de esta medida y saca el promedio. Ese peso convierte los kg de
                                     material en unidades.
                                 </p>
+
+                                <CardboardCutField
+                                    enabled={newCoreHasCardboard}
+                                    onEnabledChange={setNewCoreHasCardboard}
+                                    cost={newCoreCutCost}
+                                    onCostChange={setNewCoreCutCost}
+                                />
 
                                 <div>
                                     <label className="mb-1 block text-xs font-semibold text-[#2E4040]">

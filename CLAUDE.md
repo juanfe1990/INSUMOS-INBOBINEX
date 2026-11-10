@@ -46,9 +46,13 @@ c:\Users\jubla\Desktop\Inbobinex\
 │   │   ├── treasury-modals.tsx        # Cuenta, movimiento/transferencia, gasto de caja menor
 │   │   ├── account-select.tsx         # Selector de cuenta usado en TODOS los formularios de pago
 │   │   ├── support-button.tsx / utils.ts # Soportes en Storage (bucket privado "soportes")
-│   ├── finance/                       # Indicadores financieros y estado de resultados
+│   ├── finance/                       # DASHBOARD (1.º del menú): indicadores, estado de resultados y clientes y ventas
 │   │   ├── financial-dashboard.tsx    # KPIs por proceso + alertas tempranas (umbrales en THRESHOLDS)
 │   │   └── income-statement.tsx       # P&G con filtros: periodo, base, cliente, comparativo, renta
+│   ├── workers/                       # Trabajadores (cores / servicios): por pagar, pagos, personas
+│   │   ├── workers-panel.tsx          # Por pagar (por día, selección y pago), Pagos (lotes, anular), Personas
+│   │   ├── worker-modals.tsx          # Persona, Registrar trabajo, Asignar/Repartir, Pagar (división por persona)
+│   │   └── worker-split-editor.tsx    # Elegir personas y repartir cores (partes iguales o editable)
 │   ├── receivables/                   # Cuentas por Cobrar (cartera)
 │   │   ├── receivables-panel.tsx      # KPIs, antigüedad, saldo por cliente, filtros, export CSV
 │   │   └── order-payments-modal.tsx   # Pagos/abonos del pedido (con retención)
@@ -110,7 +114,7 @@ c:\Users\jubla\Desktop\Inbobinex\
 - `expense_status`: `'pendiente' | 'pagado' | 'anulado'`
 - `treasury_account_type`: `'caja_general' | 'banco' | 'caja_menor'`
 - `treasury_direction`: `'ingreso' | 'egreso'`
-- `treasury_movement_type`: `'saldo_inicial' | 'cobro_cliente' | 'pago_proveedor' | 'pago_gasto' | 'transferencia_entrada' | 'transferencia_salida' | 'otro_ingreso' | 'otro_egreso' | 'ajuste'`
+- `treasury_movement_type`: `'saldo_inicial' | 'cobro_cliente' | 'pago_proveedor' | 'pago_gasto' | 'pago_mano_obra' | 'transferencia_entrada' | 'transferencia_salida' | 'otro_ingreso' | 'otro_egreso' | 'ajuste'`
 - `receivable_status`: `'pendiente' | 'parcial' | 'pagado'`
 - `purchase_item_type`: `'bobina' | 'core' | 'insumo' | 'otro'`
 - `waste_reason`: `'refile' | 'arranque' | 'rollo_defectuoso' | 'rotura' | 'core_danado' | 'dano_bodega' | 'obsoleto' | 'otro'`
@@ -314,7 +318,9 @@ CREATE TABLE public.core_specifications (
   length_cm numeric NOT NULL,                 -- Medida del rollo: 8.3, 10, 12.5, 15, 20, 25, 30, 45, 50 cm...
   weight_grams numeric NOT NULL DEFAULT 0,    -- Peso promedio del core armado (g): convierte kg <-> unidades
   standard_cost numeric NOT NULL DEFAULT 0,   -- Costo PROMEDIO por core (material + mano de obra), lo recalcula cada armado
-  labor_cost_per_unit numeric NOT NULL DEFAULT 0,  -- Mano de obra por core armado (COP)
+  labor_cost_per_unit numeric NOT NULL DEFAULT 0,  -- Mano de obra de ARMADO por core (COP)
+  has_cardboard_part boolean NOT NULL DEFAULT false, -- Lleva una parte de cartón (el resto es plega)
+  cardboard_cut_cost_per_unit numeric NOT NULL DEFAULT 0, -- Mano de obra de CORTE DE CARTÓN por core (si aplica)
   core_material_id uuid REFERENCES public.core_materials(id) ON DELETE SET NULL,
   current_stock_units integer NOT NULL DEFAULT 0,
   -- UNIQUE NULLS NOT DISTINCT (core_material_id, length_cm): una medida por material
@@ -327,6 +333,17 @@ CREATE TABLE public.core_specifications (
 
 - **RPC `register_core_assembly(p_core_id, p_units, p_notes?)`** (admin u operario, atómica): kg = `units × weight_grams / 1000` (**siempre** por el peso promedio del core armado, no se digitan kg); exige `weight_grams > 0`; bloquea si el material no alcanza; resta kg de `core_materials`, suma unidades, recalcula `standard_cost` por promedio ponderado y registra en Kardex `consumo_armado_core` (kg) + `produccion_core` (unidades).
 - **RPC `adjust_core_material_stock(p_material_id, p_new_stock_kg, p_notes?)`** (solo admin): ajuste por conteo físico; Kardex `ajuste_manual` con cantidad **con signo**.
+- **Mano de obra separada por oficio** (`supabase/migrations/20261109010000_core_labor_split.sql`): armado (`labor_cost_per_unit`) y corte de cartón (`cardboard_cut_cost_per_unit`, solo si `has_cardboard_part`). Cada `register_core_assembly` inserta en **`core_assembly_labor`** (fecha, medida, unidades, total armado, total corte de cartón, material) para liquidar a los trabajadores; solo admin lee, sin escritura directa. Web: Inventarios → Cores → "3. Mano de obra por pagar" (quincena / mes / personalizado, Excel; `components/admin/inventory/core-labor-summary.tsx`).
+
+#### Trabajadores y pago de mano de obra (`workers`, `worker_earnings`, `worker_payments`)
+Ver `supabase/migrations/20261109020000_workers_labor_payments.sql` y `20261109030000_workers_tables_rpcs.sql`.
+- `workers`: personas (nombre, cédula, teléfono, `work_type` cores|servicios|ambos, banco/cuenta, activo). Lectura admin y operario (la app las lista); gestión admin. No se borran: se desactivan.
+- `worker_earnings`: lo causado **por persona** (`kind` armado | corte_carton | servicio, `work_date`, `units`, `rate`, `amount`, `assembly_labor_id`). `worker_id NULL` = **sin asignar**; `payment_id NULL` = **por pagar**. Solo admin lee; escritura solo por RPC.
+- `worker_payments`: un pago por persona; `batch_id` agrupa los pagados juntos; `account_id` obligatorio. El trigger `tr_sync_worker_payment_treasury` crea el egreso `pago_mano_obra` (`treasury_movements.worker_payment_id`). **No es gasto del P&G** (la mano de obra ya está en el costo del core).
+- **`register_core_assembly(p_core_id, p_units, p_notes?, p_workers?, p_date?)`**: `p_workers = [{worker_id, trade: armado|corte_carton, units}]`; por oficio la suma debe ser igual a `p_units`; sin personas de un oficio → una línea **sin asignar**. `p_date` hasta 31 días atrás. Llamadas antiguas (3 parámetros) siguen funcionando (todo sin asignar).
+- RPC admin: `add_worker_earning` (servicios u otros), `reassign_worker_earning(p_id, p_splits)` (asignar / repartir una línea por pagar), `delete_worker_earning` (solo por pagar), **`pay_worker_earnings(p_earning_ids[], p_account_id, p_date?, p_method?, p_reference?, p_notes?)`** (bloquea si hay líneas sin asignar o ya pagadas; divide por persona), `annul_worker_payment_batch(p_batch_id)` (devuelve el dinero y las líneas vuelven a por pagar; lo impide si un egreso está conciliado).
+- Web: módulo **Trabajadores** (solo admin) y el modal "Registrar Armado" de Inventarios pide las personas y la fecha. App: el modal "Armar cores" pide **quién trabajó** (Hoy/Ayer/Antier, personas y cores por persona; el armado es obligatorio si hay personas registradas, el corte de cartón opcional). El operario no ve valores en $.
+- Pendiente sugerido: incluir la mano de obra por pagar en las obligaciones del Dashboard financiero.
 
 #### Otros inventarios: `inventory_categories` + `inventory_items`
 Cintas, cartón industrial, papel burbuja, zuncho, bolsas, etc. Ver `supabase/migrations/20261103040000_general_inventory_items.sql`.
@@ -344,7 +361,7 @@ Ver `supabase/migrations/20261105010000_multi_stretch_client_templates.sql`.
 - Importar / exportar CSV (`lib/client-templates.ts`): columnas `cliente_nit; cliente; frecuencia_dias; tipo; referencia; medida_cm; material_core; peso_g; cantidad; precio`. Se resuelve por nombre (bobina, material, producto o SKU) sin tildes/mayúsculas; NIT sin puntos ni DV; números con formato colombiano (`1.100`, `8,3`). Vista previa con errores por fila antes de aplicar.
 
 #### Estadísticas de clientes: RPC `clients_dashboard(p_from, p_to)` (admin y vendedor)
-Pedidos no cancelados por fecha de creación: resumen (ventas sin IVA, pedidos, clientes, ticket, rollos, kg, stretch vs bodega, cobrado, cartera), periodo anterior equivalente, serie diaria, ventas por cliente (con saldo y vencido), rollos por medida, película por tipo, productos de bodega top, estados, **recompra** (según `reorder_days`) e inactivos. Web: `components/admin/clients/clients-dashboard.tsx`; app: `src/screens/ClientsStatsScreen.tsx` (pestaña Clientes).
+Pedidos no cancelados por fecha de creación: resumen (ventas sin IVA, pedidos, clientes, ticket, rollos, kg, stretch vs bodega, cobrado, cartera), periodo anterior equivalente, serie diaria, ventas por cliente (con saldo y vencido), rollos por medida, película por tipo, productos de bodega top, estados, **recompra** (según `reorder_days`) e inactivos. Web: Dashboard → Clientes y ventas (`components/admin/clients/clients-dashboard.tsx`); app: `src/screens/ClientsStatsScreen.tsx` (pestaña Clientes).
 
 #### `waste_records` (Desperdicios / mermas)
 Ver `supabase/migrations/20261104060000_waste_records.sql`. Documento fuente de toda merma.
@@ -421,7 +438,7 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
    - Toda la lógica de stock/costo/saldo vive en la base (RPC + triggers); el frontend solo valida y muestra.
 7. **Cores: compra en kg, consumo en unidades:**
    - Compras e inventario del material se digitan en **kg** (`core_materials`). Nunca sumar unidades de core directamente: las unidades solo entran por **armado** (`register_core_assembly`).
-   - Costo de un core = `weight_grams/1000 × cost_per_kg` del material + `labor_cost_per_unit`.
+   - Costo de un core = `weight_grams/1000 × cost_per_kg` del material + `labor_cost_per_unit` (armado) + `cardboard_cut_cost_per_unit` si `has_cardboard_part`.
    - El pedido descuenta 1 core armado por rollo al pasar a `'listo_despacho'`.
 
 ---
@@ -446,7 +463,8 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 - [x] Caja menor: gasto con soporte y categoría, reembolso por transferencia, % del fondo.
 - [x] Cierre diario con conteo por billetes/monedas y ajuste por diferencia; conciliación bancaria con partidas en tránsito, gastos bancarios/4x1000 y deshacer.
 
-### I. Indicadores y Estado de Resultados (`components/admin/finance/`)
+### I. Dashboard (`components/admin/finance/finance-panel.tsx`, primer módulo del menú y vista inicial)
+- [x] Pestañas: **Indicadores y alertas** y **Estado de resultados** (solo admin) + **Clientes y ventas** (`clients/clients-dashboard.tsx`, admin y vendedor; el vendedor solo ve esta).
 - [x] Panel de indicadores: liquidez (cobertura, capital de trabajo, razón corriente, prueba ácida), rentabilidad (márgenes, punto de equilibrio), ciclo de caja (DSO/DPO/DIO), ventas, inventario, producción.
 - [x] Alertas tempranas por proceso con severidad (crítico/atención/aviso) e ícono.
 - [x] Estado de resultados con filtros (periodo, base despacho/pedido, cliente, comparativo, % renta), detalle por categoría PUC, márgenes, ventas por cliente, Excel e impresión.
@@ -473,10 +491,16 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 - [x] **Desperdicios** (`components/admin/inventory/waste-panel.tsx`): filtros (periodo, tipo, causa, anulados), KPIs (costo, kg de película y % sobre lo usado, causa principal), costo por causa, productos con más desperdicio, tabla con pedido asociado, registrar (`WasteFormModal`), anular con motivo y Excel. El P&G muestra las mermas por causa y el panel financiero alerta si el desperdicio de película supera la meta.
 
 ### J. Clientes (`components/admin/clients-panel.tsx` + `components/admin/clients/`)
-- [x] Pestañas **Directorio** y **Estadísticas**.
+- [x] Directorio (las estadísticas de clientes se movieron al **Dashboard → Clientes y ventas**).
 - [x] **Pedido habitual** por cliente (`client-template-modal.tsx`): medidas de stretch + productos + frecuencia en días.
 - [x] **Exportar / Importar** pedidos habituales de todos los clientes en CSV (`templates-import-modal.tsx`, vista previa con errores).
-- [x] **Estadísticas** (`clients-dashboard.tsx`): KPIs con variación vs. periodo anterior, ventas por día/semana/mes (con tabla), ventas por cliente, rollos por medida, película por tipo, productos de bodega, recompra, inactivos y estados; export Excel.
+- [x] **Estadísticas** (`clients-dashboard.tsx`, se muestra en el Dashboard): KPIs con variación vs. periodo anterior, ventas por día/semana/mes (con tabla), ventas por cliente, rollos por medida, película por tipo, productos de bodega, recompra, inactivos y estados; export Excel.
+
+### K. Trabajadores (`components/admin/workers/`)
+- [x] Personas (cores / prestación de servicios) con datos de pago; activar/desactivar; por pagar y pagado del mes por persona.
+- [x] **Por pagar** agrupado por día: seleccionar línea, día completo o todo el periodo (semana, semana anterior, mes, personalizado); filtro por persona; líneas **sin asignar** con botón Asignar/Repartir; eliminar errores.
+- [x] **Pagar seleccionado**: total y división por persona (con su cuenta bancaria), cuenta de tesorería de la que sale, medio, fecha y referencia → un pago y un egreso por persona.
+- [x] **Pagos realizados** por lote con detalle por persona, anular y Excel. Registrar trabajos manuales (servicios).
 
 ### C. Módulo de Categorías (`app/api/categories/` y `app/(admin)/admin/page.tsx`)
 - [x] Categorías 100% en Supabase (`public.categories`); las rutas ya **no** importan Firebase.
@@ -497,7 +521,7 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 - [x] Autenticación contra Supabase Auth.
 - [x] Pantalla de pedidos priorizados para planta.
 - [x] Modal de cambio de estado en un clic.
-- [x] Modal para registrar **cores armados** vía RPC `register_core_assembly` (muestra kg a descontar y bloquea si no alcanza).
+- [x] Modal para registrar **cores armados** vía RPC `register_core_assembly` (muestra kg a descontar y bloquea si no alcanza) con **quién trabajó** (`src/components/WorkerSplit.tsx`: fecha Hoy/Ayer/Antier, personas y cores por persona para armado y corte de cartón).
 - [x] **Desperdicio en planta** (`src/screens/WasteModal.tsx`, RPC `register_waste`): botón flotante "Desperdicio" y, en el detalle del pedido, "Registrar desperdicio de este pedido" (prellena bobina y pedido). Película, cores o material de cores con causa.
 - [x] Avisos no bloqueantes (`src/components/Notice.tsx`) en lugar de `Alert.alert`.
 - [x] El detalle del pedido muestra los productos de bodega a "Incluir en el despacho".

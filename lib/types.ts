@@ -266,6 +266,81 @@ export type CoreMaterial = {
     updated_at: string;
 };
 
+/** Persona que arma cores, corta cartón o presta servicios */
+export type WorkerType = 'cores' | 'servicios' | 'ambos';
+export type Worker = {
+    id: string;
+    full_name: string;
+    document_id: string | null;
+    phone: string | null;
+    work_type: WorkerType;
+    bank_name: string | null;
+    bank_account: string | null;
+    notes: string | null;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+};
+
+export type WorkerEarningKind = 'armado' | 'corte_carton' | 'servicio';
+/** Trabajo causado por persona (worker_id null = sin asignar; payment_id null = por pagar) */
+export type WorkerEarning = {
+    id: string;
+    worker_id: string | null;
+    work_date: string;
+    kind: WorkerEarningKind;
+    assembly_labor_id: string | null;
+    core_id: string | null;
+    description: string;
+    units: number | null;
+    rate: number | null;
+    amount: number;
+    payment_id: string | null;
+    created_by: string | null;
+    created_at: string;
+    worker?: { full_name: string } | null;
+};
+
+/** Pago a una persona; batch_id agrupa los pagados juntos */
+export type WorkerPayment = {
+    id: string;
+    batch_id: string;
+    worker_id: string;
+    payment_date: string;
+    amount: number;
+    account_id: string;
+    method: PaymentMethod;
+    reference: string | null;
+    notes: string | null;
+    period_from: string | null;
+    period_to: string | null;
+    created_by: string | null;
+    created_at: string;
+    worker?: { full_name: string; bank_name: string | null; bank_account: string | null } | null;
+    account?: { name: string } | null;
+};
+
+/** Mano de obra causada en cada armado de cores (para liquidar a los trabajadores) */
+export type CoreAssemblyLabor = {
+    id: string;
+    assembly_date: string;
+    core_id: string | null;
+    core_name: string;
+    length_cm: number;
+    units: number;
+    assembly_cost_per_unit: number;
+    assembly_total: number;
+    has_cardboard_part: boolean;
+    cardboard_cut_cost_per_unit: number;
+    cardboard_cut_total: number;
+    material_cost: number;
+    kg_used: number;
+    notes: string | null;
+    created_by: string | null;
+    created_at: string;
+    creator?: { full_name: string } | null;
+};
+
 /** Línea del pedido habitual de un cliente (client_order_templates) */
 export type ClientOrderTemplate = {
     id: string;
@@ -346,8 +421,12 @@ export type CoreSpecification = {
     min_stock_alert_units: number;
     /** Material del que se arma esta medida */
     core_material_id: string | null;
-    /** Mano de obra por core armado (COP) */
+    /** Mano de obra de ARMADO por core (COP) */
     labor_cost_per_unit: number;
+    /** La medida lleva una parte de cartón (el resto es plega) */
+    has_cardboard_part?: boolean;
+    /** Mano de obra de CORTE DE CARTÓN por core (solo si has_cardboard_part) */
+    cardboard_cut_cost_per_unit?: number;
     created_at: string;
     updated_at: string;
 };
@@ -550,6 +629,7 @@ export type TreasuryMovementType =
     | 'cobro_cliente'
     | 'pago_proveedor'
     | 'pago_gasto'
+    | 'pago_mano_obra'
     | 'transferencia_entrada'
     | 'transferencia_salida'
     | 'otro_ingreso'

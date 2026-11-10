@@ -7,6 +7,7 @@ import {
     ArrowLeft,
     ClipboardList,
     Layers,
+    HardHat,
     LogOut,
     Menu,
     Package,
@@ -14,7 +15,7 @@ import {
     PanelLeftOpen,
     Receipt,
     Landmark,
-    Gauge,
+    LayoutDashboard,
     Tags,
     Truck,
     Users,
@@ -32,17 +33,20 @@ export type AdminTab =
     | 'finance'
     | 'clients'
     | 'inventory'
+    | 'workers'
     | 'suppliers'
     | 'catalog';
 
 const NAV: { key: AdminTab; label: string; icon: LucideIcon; adminOnly?: boolean }[] = [
+    // Dashboard: indicadores, P&G (admin) y estadísticas de clientes (admin y vendedor)
+    { key: 'finance', label: 'Dashboard', icon: LayoutDashboard },
     { key: 'orders', label: 'Pedidos & Planta', icon: ClipboardList },
     { key: 'receivables', label: 'Cuentas por Cobrar', icon: Wallet },
     { key: 'expenses', label: 'Gastos Fijos', icon: Receipt, adminOnly: true },
     { key: 'treasury', label: 'Caja y Bancos', icon: Landmark, adminOnly: true },
-    { key: 'finance', label: 'Indicadores y P&G', icon: Gauge, adminOnly: true },
     { key: 'clients', label: 'Clientes', icon: Users },
     { key: 'inventory', label: 'Inventarios & Kardex', icon: Layers },
+    { key: 'workers', label: 'Trabajadores', icon: HardHat, adminOnly: true },
     { key: 'suppliers', label: 'Proveedores & CxP', icon: Truck },
     { key: 'catalog', label: 'Catálogo Web', icon: Package },
 ];
