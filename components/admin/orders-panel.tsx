@@ -41,6 +41,11 @@ import {
     Factory,
     Package,
     Receipt,
+    Search,
+    AlertTriangle,
+    CalendarClock,
+    History,
+    PackageCheck,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -48,11 +53,15 @@ const STATUS_CONFIG: Record<OrderStatus, { label: string; bg: string; text: stri
     pendiente: { label: 'Pendiente Oficina', bg: 'bg-gray-100', text: 'text-gray-700', icon: Clock },
     en_cola: { label: 'En Cola Planta', bg: 'bg-amber-100', text: 'text-amber-800', icon: Clock },
     en_embobinado: { label: 'En Embobinado', bg: 'bg-blue-100', text: 'text-blue-800', icon: RotateCw },
-    listo_despacho: { label: 'Listo Despacho', bg: 'bg-purple-100', text: 'text-purple-800', icon: CheckCircle2 },
-    enviado: { label: 'Enviado / Salida', bg: 'bg-green-100', text: 'text-green-800', icon: Truck },
+    listo_despacho: { label: 'Listo Despacho', bg: 'bg-purple-100', text: 'text-purple-800', icon: PackageCheck },
+    enviado: { label: 'Enviado', bg: 'bg-green-100', text: 'text-green-800', icon: Truck },
     entregado: { label: 'Entregado', bg: 'bg-emerald-100', text: 'text-emerald-800', icon: CheckCircle2 },
     cancelado: { label: 'Cancelado', bg: 'bg-red-100', text: 'text-red-700', icon: AlertCircle },
 };
+
+/** Vistas del listado: "por despachar" agrupa lo que aún no ha salido de la empresa */
+type OrderView = 'despachar' | 'en_cola' | 'en_embobinado' | 'listo_despacho' | 'enviado' | 'entregado' | 'historico' | 'todos';
+const PENDING_DISPATCH: OrderStatus[] = ['pendiente', 'en_cola', 'en_embobinado', 'listo_despacho'];
 
 const PRIORITY_CONFIG: Record<OrderPriority, { label: string; bg: string; text: string }> = {
     baja: { label: 'Baja', bg: 'bg-slate-100', text: 'text-slate-600' },
@@ -70,7 +79,11 @@ export default function OrdersPanel() {
     const [orders, setOrders] = useState<Order[]>([]);
     const [clients, setClients] = useState<Client[]>([]);
     const [loading, setLoading] = useState(true);
-    const [filterStatus, setFilterStatus] = useState<string>('all');
+    const [view, setView] = useState<OrderView>('despachar');
+    const [search, setSearch] = useState('');
+    const [deliveryFilter, setDeliveryFilter] = useState<'all' | 'late' | 'today' | 'week'>('all');
+    const [sortBy, setSortBy] = useState<'entrega' | 'prioridad' | 'numero'>('entrega');
+    const [visibleCount, setVisibleCount] = useState(50);
     const [showModal, setShowModal] = useState(false);
     const [saving, setSaving] = useState(false);
 
@@ -372,10 +385,66 @@ export default function OrdersPanel() {
         }
     };
 
-    const filteredOrders = orders.filter((o) => {
-        if (filterStatus === 'all') return true;
-        return o.status === filterStatus;
-    });
+    // ---------- Vista de pedidos: por despachar primero, históricos aparte ----------
+    const todayStr = new Date().toLocaleDateString('en-CA');
+    const daysTo = (d?: string | null) =>
+        d ? Math.round((new Date(d + 'T00:00:00').getTime() - new Date(todayStr + 'T00:00:00').getTime()) / 864e5) : null;
+    const isPendingDispatch = (o: Order) => PENDING_DISPATCH.includes(o.status);
+
+    const live = useMemo(() => orders.filter((o) => !o.is_historical), [orders]);
+    const toDispatch = useMemo(() => live.filter(isPendingDispatch), [live]);
+    const lateOrders = toDispatch.filter((o) => (daysTo(o.delivery_date) ?? 0) < 0);
+    const todayOrders = toDispatch.filter((o) => daysTo(o.delivery_date) === 0);
+    const countBy = (st: OrderStatus) => live.filter((o) => o.status === st).length;
+    const historicalCount = orders.length - live.length;
+
+    const filteredOrders = useMemo(() => {
+        const q = search.trim().toLowerCase();
+        let list =
+            view === 'despachar'
+                ? toDispatch
+                : view === 'historico'
+                  ? orders.filter((o) => o.is_historical)
+                  : view === 'todos'
+                    ? live
+                    : live.filter((o) => o.status === view);
+        if (deliveryFilter !== 'all') {
+            list = list.filter((o) => {
+                const d = daysTo(o.delivery_date);
+                if (d === null) return false;
+                if (deliveryFilter === 'late') return d < 0 && isPendingDispatch(o);
+                if (deliveryFilter === 'today') return d === 0;
+                return d >= 0 && d <= 7;
+            });
+        }
+        if (q) {
+            list = list.filter(
+                (o) =>
+                    String(o.order_number).includes(q) ||
+                    (o.invoice_number || '').toLowerCase().includes(q) ||
+                    (o.client?.business_name || '').toLowerCase().includes(q) ||
+                    (o.historical_description || o.notes || '').toLowerCase().includes(q)
+            );
+        }
+        const rank: Record<OrderPriority, number> = { urgente: 0, alta: 1, normal: 2, baja: 3 };
+        const byNumberDesc = (a: Order, b: Order) => b.order_number - a.order_number;
+        return [...list].sort((a, b) => {
+            if (sortBy === 'numero') return byNumberDesc(a, b);
+            if (sortBy === 'prioridad') return rank[a.priority] - rank[b.priority] || (a.delivery_date || '').localeCompare(b.delivery_date || '');
+            // Por despachar: lo más próximo a entregar primero; en el resto, lo más reciente primero
+            return view === 'despachar' || view === 'en_cola' || view === 'en_embobinado' || view === 'listo_despacho'
+                ? (a.delivery_date || '').localeCompare(b.delivery_date || '') || rank[a.priority] - rank[b.priority]
+                : (b.delivery_date || '').localeCompare(a.delivery_date || '') || byNumberDesc(a, b);
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [orders, live, toDispatch, view, search, deliveryFilter, sortBy]);
+    const shownOrders = filteredOrders.slice(0, visibleCount);
+
+    const changeView = (v: OrderView) => {
+        setView(v);
+        setVisibleCount(50);
+        if (v !== 'despachar') setDeliveryFilter('all');
+    };
 
     // --- Derivados del formulario ---
     const blockReason =
@@ -425,53 +494,143 @@ export default function OrdersPanel() {
                 </button>
             </div>
 
-            {/* Filtros por Estado */}
-            <div className="flex flex-wrap gap-2">
-                <button
-                    onClick={() => setFilterStatus('all')}
-                    className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${filterStatus === 'all'
-                        ? 'bg-[#3F8346] text-white'
-                        : 'bg-[#C8CDC9]/30 text-[#2E4040] hover:bg-[#C8CDC9]/50'
+            {/* Resumen de despacho (clic para filtrar) */}
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                {(
+                    [
+                        {
+                            key: 'despachar',
+                            label: 'Por despachar',
+                            value: toDispatch.length,
+                            sub: formatCOP(toDispatch.reduce((a, o) => a + Number(o.total_amount || 0), 0)),
+                            icon: Truck,
+                            tone: 'text-[#2E4040]',
+                            onClick: () => { changeView('despachar'); setDeliveryFilter('all'); },
+                            active: view === 'despachar' && deliveryFilter === 'all',
+                        },
+                        {
+                            key: 'late',
+                            label: 'Atrasados',
+                            value: lateOrders.length,
+                            sub: lateOrders.length ? 'Fecha de entrega vencida' : 'Al día',
+                            icon: AlertTriangle,
+                            tone: lateOrders.length ? 'text-red-700' : 'text-[#2E4040]',
+                            onClick: () => { changeView('despachar'); setDeliveryFilter('late'); },
+                            active: view === 'despachar' && deliveryFilter === 'late',
+                        },
+                        {
+                            key: 'today',
+                            label: 'Se entregan hoy',
+                            value: todayOrders.length,
+                            sub: 'Pendientes de salir',
+                            icon: CalendarClock,
+                            tone: todayOrders.length ? 'text-amber-700' : 'text-[#2E4040]',
+                            onClick: () => { changeView('despachar'); setDeliveryFilter('today'); },
+                            active: view === 'despachar' && deliveryFilter === 'today',
+                        },
+                        {
+                            key: 'planta',
+                            label: 'En planta',
+                            value: countBy('en_cola') + countBy('en_embobinado'),
+                            sub: `${countBy('en_cola')} en cola · ${countBy('en_embobinado')} embobinando`,
+                            icon: Factory,
+                            tone: 'text-[#2E4040]',
+                            onClick: () => changeView('en_cola'),
+                            active: view === 'en_cola' || view === 'en_embobinado',
+                        },
+                        {
+                            key: 'listo',
+                            label: 'Listos para despacho',
+                            value: countBy('listo_despacho'),
+                            sub: 'Esperando salida',
+                            icon: PackageCheck,
+                            tone: 'text-[#2E4040]',
+                            onClick: () => changeView('listo_despacho'),
+                            active: view === 'listo_despacho',
+                        },
+                    ] as const
+                ).map((k) => (
+                    <button
+                        key={k.key}
+                        onClick={k.onClick}
+                        className={`rounded-xl border bg-white p-3.5 text-left shadow-sm transition hover:border-[#3F8346] ${
+                            k.active ? 'border-[#3F8346] ring-1 ring-[#3F8346]' : 'border-[#C8CDC9]'
                         }`}
-                >
-                    Todos ({orders.length})
-                </button>
-                <button
-                    onClick={() => setFilterStatus('en_cola')}
-                    className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${filterStatus === 'en_cola'
-                        ? 'bg-amber-600 text-white'
-                        : 'bg-amber-100 text-amber-900 hover:bg-amber-200'
-                        }`}
-                >
-                    En Cola ({orders.filter((o) => o.status === 'en_cola').length})
-                </button>
-                <button
-                    onClick={() => setFilterStatus('en_embobinado')}
-                    className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${filterStatus === 'en_embobinado'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-blue-100 text-blue-900 hover:bg-blue-200'
-                        }`}
-                >
-                    En Embobinado ({orders.filter((o) => o.status === 'en_embobinado').length})
-                </button>
-                <button
-                    onClick={() => setFilterStatus('listo_despacho')}
-                    className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${filterStatus === 'listo_despacho'
-                        ? 'bg-purple-600 text-white'
-                        : 'bg-purple-100 text-purple-900 hover:bg-purple-200'
-                        }`}
-                >
-                    Listo Despacho ({orders.filter((o) => o.status === 'listo_despacho').length})
-                </button>
-                <button
-                    onClick={() => setFilterStatus('enviado')}
-                    className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${filterStatus === 'enviado'
-                        ? 'bg-green-600 text-white'
-                        : 'bg-green-100 text-green-900 hover:bg-green-200'
-                        }`}
-                >
-                    Enviados ({orders.filter((o) => o.status === 'enviado').length})
-                </button>
+                    >
+                        <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-[#949E97]">
+                            <k.icon className="h-3.5 w-3.5" /> {k.label}
+                        </p>
+                        <p className={`mt-1 text-2xl font-bold ${k.tone}`} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {k.value}
+                        </p>
+                        <p className="truncate text-[11px] text-[#949E97]">{k.sub}</p>
+                    </button>
+                ))}
+            </div>
+
+            {/* Vistas por estado + búsqueda, entrega y orden (una sola fila de filtros) */}
+            <div className="space-y-3 rounded-xl border border-[#C8CDC9] bg-white p-3 shadow-sm">
+                <div className="flex flex-wrap gap-1.5">
+                    {(
+                        [
+                            ['despachar', 'Por despachar', toDispatch.length],
+                            ['en_cola', STATUS_CONFIG.en_cola.label, countBy('en_cola')],
+                            ['en_embobinado', STATUS_CONFIG.en_embobinado.label, countBy('en_embobinado')],
+                            ['listo_despacho', STATUS_CONFIG.listo_despacho.label, countBy('listo_despacho')],
+                            ['enviado', 'Enviados', countBy('enviado')],
+                            ['entregado', 'Entregados', countBy('entregado')],
+                            ['todos', 'Todos', live.length],
+                            ['historico', 'Histórico (Excel)', historicalCount],
+                        ] as [OrderView, string, number][]
+                    ).map(([v, label, n]) => (
+                        <button
+                            key={v}
+                            onClick={() => changeView(v)}
+                            className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                                view === v
+                                    ? 'border-[#2E4040] bg-[#2E4040] text-white'
+                                    : 'border-[#C8CDC9] bg-white text-[#2E4040] hover:bg-[#C8CDC9]/20'
+                            }`}
+                        >
+                            {v === 'historico' && <History className="h-3 w-3" />}
+                            {label}
+                            <span className={`rounded-full px-1.5 text-[10px] ${view === v ? 'bg-white/20' : 'bg-[#C8CDC9]/40'}`}>{n}</span>
+                        </button>
+                    ))}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative min-w-[220px] flex-1">
+                        <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#949E97]" />
+                        <input
+                            value={search}
+                            onChange={(e) => { setSearch(e.target.value); setVisibleCount(50); }}
+                            placeholder="Buscar por cliente, # de pedido, factura (FE) o producto..."
+                            className="w-full rounded-md border border-[#C8CDC9] py-1.5 pl-8 pr-3 text-xs focus:border-[#3F8346] focus:outline-none"
+                        />
+                    </div>
+                    <select
+                        value={deliveryFilter}
+                        onChange={(e) => { setDeliveryFilter(e.target.value as typeof deliveryFilter); setVisibleCount(50); }}
+                        className="rounded-md border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
+                        aria-label="Filtrar por fecha de entrega"
+                    >
+                        <option value="all">Cualquier fecha de entrega</option>
+                        <option value="late">Atrasados</option>
+                        <option value="today">Se entregan hoy</option>
+                        <option value="week">Próximos 7 días</option>
+                    </select>
+                    <select
+                        value={sortBy}
+                        onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                        className="rounded-md border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none"
+                        aria-label="Ordenar"
+                    >
+                        <option value="entrega">Ordenar por entrega</option>
+                        <option value="prioridad">Ordenar por prioridad</option>
+                        <option value="numero">Más recientes primero</option>
+                    </select>
+                    <span className="text-xs text-[#949E97]">{filteredOrders.length} pedido(s)</span>
+                </div>
             </div>
 
             {/* Tabla de Pedidos */}
@@ -482,9 +641,13 @@ export default function OrdersPanel() {
             ) : filteredOrders.length === 0 ? (
                 <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-[#C8CDC9] bg-white/50 py-20 text-center">
                     <Filter className="h-10 w-10 text-[#949E97]" />
-                    <p className="mt-3 font-semibold text-[#2E4040]">No hay pedidos en este estado</p>
+                    <p className="mt-3 font-semibold text-[#2E4040]">
+                        {view === 'despachar' && !search && deliveryFilter === 'all'
+                            ? 'Todo despachado: no hay pedidos pendientes de salir'
+                            : 'No hay pedidos con estos filtros'}
+                    </p>
                     <p className="text-xs text-[#949E97]">
-                        Haz clic en &quot;Nueva Solicitud de Pedido&quot; para crear uno
+                        Cambia la vista o la búsqueda, o crea uno con &quot;Nueva Solicitud de Pedido&quot;.
                     </p>
                 </div>
             ) : (
@@ -504,16 +667,25 @@ export default function OrdersPanel() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-[#C8CDC9]/50">
-                                {filteredOrders.map((order) => {
+                                {shownOrders.map((order) => {
                                     const statusCfg = STATUS_CONFIG[order.status] || STATUS_CONFIG.pendiente;
                                     const priorityCfg = PRIORITY_CONFIG[order.priority] || PRIORITY_CONFIG.normal;
                                     const totalRolls = order.items?.reduce((s, i) => s + i.quantity, 0) || 0;
                                     const prods = order.products || [];
 
+                                    const dDays = daysTo(order.delivery_date);
+                                    const pendingOut = isPendingDispatch(order);
+                                    const isLate = pendingOut && dDays !== null && dDays < 0;
                                     return (
-                                        <tr key={order.id} className="hover:bg-slate-50/80">
+                                        <tr
+                                            key={order.id}
+                                            className={`hover:bg-slate-50/80 ${isLate ? 'border-l-4 border-l-red-400' : ''}`}
+                                        >
                                             <td className="px-4 py-3.5 font-mono font-bold text-[#2E4040]">
                                                 #{order.order_number}
+                                                {order.invoice_number && (
+                                                    <div className="font-sans text-[10px] font-semibold text-[#949E97]">{order.invoice_number}</div>
+                                                )}
                                             </td>
                                             <td className="px-4 py-3.5">
                                                 <div className="font-semibold text-[#2E4040]">
@@ -542,8 +714,36 @@ export default function OrdersPanel() {
                                                         })
                                                         : 'N/A'}</span>
                                                 </div>
+                                                {pendingOut && dDays !== null && (
+                                                    <span
+                                                        className={`mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                                            dDays < 0
+                                                                ? 'bg-red-100 text-red-700'
+                                                                : dDays === 0
+                                                                  ? 'bg-amber-100 text-amber-800'
+                                                                  : 'bg-slate-100 text-slate-600'
+                                                        }`}
+                                                    >
+                                                        {dDays < 0 ? <AlertTriangle className="h-3 w-3" /> : <CalendarClock className="h-3 w-3" />}
+                                                        {dDays < 0
+                                                            ? `Atrasado ${-dDays} d`
+                                                            : dDays === 0
+                                                              ? 'Hoy'
+                                                              : dDays === 1
+                                                                ? 'Mañana'
+                                                                : `En ${dDays} días`}
+                                                    </span>
+                                                )}
                                             </td>
                                             <td className="px-4 py-3.5">
+                                                {order.is_historical && (
+                                                    <div className="max-w-[260px] text-[11px] text-[#2E4040]" title={order.historical_description || ''}>
+                                                        <span className="mr-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                                                            Histórico
+                                                        </span>
+                                                        <span className="line-clamp-2">{order.historical_description}</span>
+                                                    </div>
+                                                )}
                                                 {totalRolls > 0 && (
                                                     <>
                                                         <div className="flex items-center gap-1 text-xs font-semibold text-[#2E4040]">
@@ -655,9 +855,19 @@ export default function OrdersPanel() {
                                                             Marcar Salida / Enviado
                                                         </button>
                                                     )}
-                                                    {order.status === 'enviado' && (
-                                                        <span className="text-xs font-semibold text-green-700">
-                                                            ✓ Despachado
+                                                    {order.status === 'enviado' && !order.is_historical && (
+                                                        <button
+                                                            onClick={() => handleStatusChange(order.id, 'entregado')}
+                                                            className="rounded bg-emerald-700 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-800"
+                                                            title="El cliente ya recibió el pedido"
+                                                        >
+                                                            Marcar entregado
+                                                        </button>
+                                                    )}
+                                                    {order.status === 'entregado' && (
+                                                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
+                                                            <CheckCircle2 className="h-3.5 w-3.5" />
+                                                            {order.is_historical ? 'Histórico' : 'Entregado'}
                                                         </span>
                                                     )}
                                                 </div>
@@ -685,6 +895,16 @@ export default function OrdersPanel() {
                             </tbody>
                         </table>
                     </div>
+                    {filteredOrders.length > shownOrders.length && (
+                        <div className="border-t border-[#C8CDC9] p-3 text-center">
+                            <button
+                                onClick={() => setVisibleCount((n) => n + 50)}
+                                className="rounded-md border border-[#C8CDC9] px-4 py-1.5 text-xs font-semibold text-[#2E4040] hover:bg-[#C8CDC9]/20"
+                            >
+                                Ver {Math.min(50, filteredOrders.length - shownOrders.length)} más ({shownOrders.length} de {filteredOrders.length})
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
 

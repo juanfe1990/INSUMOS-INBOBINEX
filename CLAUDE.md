@@ -233,6 +233,13 @@ CREATE TABLE public.order_items (
 );
 ```
 
+#### Pedidos históricos (ver `supabase/migrations/20261117010000_historical_orders.sql`)
+- `orders.invoice_number` (ej. "FE 310", único), `is_historical`, `historical_cost` (costo sin IVA del Excel), `historical_description`.
+- 2026-11-17: se cargaron 302 pedidos (FE 1–FE 310) desde `ARCHIVO PARA CARGAR JUANES.xlsx`: estado `entregado`, sin `order_items`/`order_products`, **sin inventario**; FE 190 y FE 228 venían en dos filas y se unieron; FE 300 tenía fecha 11-dic (error) y se cargó 11-nov.
+- Pagadas: un `customer_payments` por el total con fecha = fecha límite, **sin `account_id`** y con `customer_payments.is_historical = true` (migración `20261117020000`): el trigger `tr_protect_historical_payments` impide editarlos o borrarlos (nadie les asigna cuenta → el ingreso no se registra dos veces). Las históricas **pagadas no aparecen en Cuentas por Cobrar** y sus pagos no cuentan como "cobrado" (CxC ni estadísticas). Pendientes: quedan en cartera con `due_date` = fecha límite y se cobran normal, con cuenta.
+- Cuentan en **cartera** y en **estadísticas de clientes**; **NO** en el Estado de resultados (`income_statement` filtra `NOT o.is_historical`); el control "pagos sin cuenta" del Dashboard los ignora.
+- 39 clientes nuevos con contacto/teléfono/dirección "Por completar" y el plazo de pago más usado en el Excel.
+
 #### Tesorería (ver `supabase/migrations/20261104010000_treasury.sql`)
 - `treasury_accounts` (caja general 110505, bancos 111005, caja menor 110510 con `petty_cash_fund`): `opening_balance` + `current_balance` (lo mantiene el trigger `tr_treasury_movements_balance`).
 - `treasury_movements`: `direction`, `movement_type`, `amount`, `support_path` (Storage), origen único: `customer_payment_id` | `supplier_payment_id` | `expense_id` | `transfer_group`; `reconciled` + `reconciliation_id`.
@@ -446,6 +453,7 @@ Ver DDL completo en `supabase/migrations/20261103010000_suppliers_purchase_invoi
 ## 5. ✅ Estado de Avance Implementado
 
 ### A. Módulo de Pedidos (`components/admin/orders-panel.tsx`)
+- [x] **Vista por despachar** (por defecto): pendientes de salir (`pendiente`, `en_cola`, `en_embobinado`, `listo_despacho`) ordenados por fecha de entrega; tarjetas clicables (Por despachar, Atrasados, Se entregan hoy, En planta, Listos para despacho); pestañas por estado con conteo, incluido **Entregados**, y **Histórico (Excel)** aparte (los históricos no se mezclan con los pedidos reales); búsqueda por cliente / # / FE / producto, filtro de entrega (atrasados, hoy, 7 días), orden y paginación ("Ver más"). Indicador "Atrasado N d / Hoy / Mañana" y botón **Marcar entregado** para pedidos enviados.
 - [x] Modal con **varias medidas de stretch** (`StretchLinesEditor`, "Agregar otra medida") + **productos de bodega** (`OrderProductsEditor`), total del pedido y creación atómica vía RPC `create_order`.
 - [x] Al elegir el cliente se carga su **pedido habitual** (y botón para recargarlo).
 - [x] Pedidos solo de productos quedan "Listo Despacho" al crearse; la tabla muestra rollos + productos + total.

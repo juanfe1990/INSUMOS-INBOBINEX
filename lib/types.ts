@@ -145,11 +145,19 @@ export type CustomerPayment = {
     account_id: string | null;
     created_by: string;
     created_at: string;
+    /** Pago de una factura histórica que ya venía pagada: bloqueado, no mueve caja */
+    is_historical?: boolean;
 };
 
 export type Order = {
     id: string;
     order_number: number;
+    /** Número de factura (ej. "FE 310") */
+    invoice_number?: string | null;
+    /** Pedido histórico cargado desde Excel: sin stretch ni inventario, fuera del P&G */
+    is_historical?: boolean;
+    historical_cost?: number | null;
+    historical_description?: string | null;
     client_id: string;
     created_by: string;
     assigned_operator_id?: string | null;

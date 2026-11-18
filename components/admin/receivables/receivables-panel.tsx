@@ -66,7 +66,11 @@ export default function ReceivablesPanel() {
                 .neq('status', 'cancelado')
                 .order('due_date', { ascending: true });
             if (error) throw error;
-            const list = (data || []) as unknown as Order[];
+            // Las facturas históricas que ya venían PAGADAS no son cartera: su dinero entró antes del
+            // sistema y no deben volver a registrar ingreso. Las históricas pendientes sí se cobran aquí.
+            const list = ((data || []) as unknown as Order[]).filter(
+                (o) => !(o.is_historical && balanceOf(o) <= 0)
+            );
             setOrders(list);
             // mantener el modal sincronizado con los datos nuevos
             setSelected((prev) => (prev ? list.find((o) => o.id === prev.id) || null : null));
@@ -109,7 +113,7 @@ export default function ReceivablesPanel() {
         }
         const cobradoMes = orders
             .flatMap((o) => o.payments || [])
-            .filter((p) => p.payment_date.slice(0, 7) === month)
+            .filter((p) => !p.is_historical && p.payment_date.slice(0, 7) === month)
             .reduce((acc, p) => acc + Number(p.amount) + Number(p.withholding_amount), 0);
         return { porCobrar, vencido, vence7, cobradoMes };
     }, [open, orders]);
@@ -362,7 +366,10 @@ export default function ReceivablesPanel() {
                                 return (
                                     <tr key={o.id} className="hover:bg-[#F9FBFA]">
                                         <td className="px-4 py-3">
-                                            <div className="font-mono font-bold text-[#2E4040]">#{o.order_number}</div>
+                                            <div className="font-mono font-bold text-[#2E4040]">
+                                                #{o.order_number}
+                                                {o.invoice_number && <span className="ml-1 font-sans text-[10px] font-semibold text-[#949E97]">{o.invoice_number}</span>}
+                                            </div>
                                             <div className="text-[10px] text-[#949E97]">{formatDate(o.created_at)}</div>
                                         </td>
                                         <td className="px-4 py-3">

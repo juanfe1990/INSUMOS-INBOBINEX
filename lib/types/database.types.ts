@@ -237,6 +237,10 @@ export interface Database {
           due_date: string | null;
           paid_amount: number;
           payment_status: ReceivableStatus;
+          invoice_number: string | null;
+          is_historical: boolean;
+          historical_cost: number | null;
+          historical_description: string | null;
           started_at: string | null;
           completed_at: string | null;
           shipped_at: string | null;
