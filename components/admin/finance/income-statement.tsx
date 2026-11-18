@@ -112,10 +112,12 @@ export default function IncomeStatement() {
         push('revenue', 'Ingresos operacionales (ventas)', 'total');
         push('revenue_stretch', 'Stretch fabricado', 'sub');
         push('revenue_products', 'Productos de bodega', 'sub');
+        if (Number(cur.revenue_historical) || Number(prev?.revenue_historical)) push('revenue_historical', 'Ventas históricas (Excel)', 'sub');
         push('cost_sales', 'Costo de ventas', 'total');
         push('cost_film', 'Película consumida', 'sub');
         push('cost_cores', 'Cores', 'sub');
         push('cost_products', 'Productos vendidos', 'sub');
+        if (Number(cur.cost_historical) || Number(prev?.cost_historical)) push('cost_historical', 'Costo ventas históricas (Excel)', 'sub');
         if (!cur.client_filtered) {
             push('mermas', 'Mermas y desperdicios de inventario', 'item');
             const prevWaste = new Map<string, number>(
