@@ -16,6 +16,7 @@ import {
 import { toast } from 'sonner';
 import { createClient } from '@/lib/supabase/client';
 import { downloadCSV } from '@/components/admin/suppliers/utils';
+import { DOCUMENT_FILTERS, documentFilterLabel, type DocumentFilter } from '@/lib/documents';
 
 const INPUT =
     'rounded border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none';
@@ -62,16 +63,17 @@ export default function ClientsDashboard() {
     const [data, setData] = useState<Dash | null>(null);
     const [loading, setLoading] = useState(true);
     const [showAllClients, setShowAllClients] = useState(false);
+    const [documents, setDocuments] = useState<DocumentFilter>('todos');
     const [from, to] = rangeFor(preset, customFrom, customTo);
 
     const load = useCallback(async () => {
         if (!from || !to || to < from) return;
         setLoading(true);
-        const { data: d, error } = await supabase.rpc('clients_dashboard', { p_from: from, p_to: to });
+        const { data: d, error } = await supabase.rpc('clients_dashboard', { p_from: from, p_to: to, p_documents: documents });
         if (error) toast.error('No se pudieron calcular las estadísticas: ' + error.message);
         setData(d);
         setLoading(false);
-    }, [supabase, from, to]);
+    }, [supabase, from, to, documents]);
 
     useEffect(() => {
         load();
@@ -83,7 +85,7 @@ export default function ClientsDashboard() {
 
     const exportClients = () =>
         downloadCSV(
-            `clientes_${from}_${to}.csv`,
+            `clientes_${documents === 'todos' ? '' : documents + '_'}${from}_${to}.csv`,
             ['Cliente', 'Pedidos', 'Ventas sin IVA', 'Participación %', 'Rollos', 'Kg película', 'Último pedido', 'Saldo por cobrar', 'Vencido'],
             clients.map((c) => [
                 c.name,
@@ -113,6 +115,16 @@ export default function ClientsDashboard() {
                         <option value="custom">Personalizado</option>
                     </select>
                 </div>
+                <div>
+                    <label className={LABEL}>Documento</label>
+                    <select value={documents} onChange={(e) => setDocuments(e.target.value as DocumentFilter)} className={INPUT}>
+                        {DOCUMENT_FILTERS.map((d) => (
+                            <option key={d.value} value={d.value}>
+                                {d.label}
+                            </option>
+                        ))}
+                    </select>
+                </div>
                 {preset === 'custom' && (
                     <>
                         <div>
@@ -126,7 +138,7 @@ export default function ClientsDashboard() {
                     </>
                 )}
                 <p className="mb-1.5 text-[11px] text-[#949E97]">
-                    {from} a {to} · pedidos no cancelados, por fecha de creación · valores sin IVA
+                    {from} a {to} · {documentFilterLabel(documents).toLowerCase()} · pedidos no cancelados, por fecha de creación · valores sin IVA
                     {prev ? ` · se compara con ${prev.from} a ${prev.to}` : ''}
                 </p>
                 {loading && <Loader2 className="mb-1.5 h-4 w-4 animate-spin text-[#3F8346]" />}

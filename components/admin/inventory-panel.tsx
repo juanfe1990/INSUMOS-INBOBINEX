@@ -18,7 +18,7 @@ import FilmCutsManager from '@/components/admin/inventory/film-cuts-manager';
 import WastePanel from '@/components/admin/inventory/waste-panel';
 import CardboardCutField from '@/components/admin/inventory/cardboard-cut-field';
 import CoreLaborSummary from '@/components/admin/inventory/core-labor-summary';
-import WorkerSplitEditor, { equalSplit, splitSum, type WorkerSplit } from '@/components/admin/workers/worker-split-editor';
+import WorkerSplitEditor, { type WorkerShare } from '@/components/admin/workers/worker-split-editor';
 import type { Worker } from '@/lib/types';
 import InvoiceFormModal from '@/components/admin/suppliers/invoice-form-modal';
 import {
@@ -192,8 +192,10 @@ export default function InventoryPanel() {
     const [coreEntryNotes, setCoreEntryNotes] = useState<string>('');
     // Personas que armaron / cortaron el cartón y fecha del trabajo
     const [coreWorkers, setCoreWorkers] = useState<Worker[]>([]);
-    const [coreEntrySplit, setCoreEntrySplit] = useState<WorkerSplit[]>([]);
-    const [coreEntryCutSplit, setCoreEntryCutSplit] = useState<WorkerSplit[]>([]);
+    const [coreEntrySplit, setCoreEntrySplit] = useState<WorkerShare[]>([]);
+    const [coreEntryCutSplit, setCoreEntryCutSplit] = useState<WorkerShare[]>([]);
+    // ¿El valor del corte de cartón también se reparte entre las mismas personas del armado?
+    const [coreEntryCutSame, setCoreEntryCutSame] = useState(true);
     const [coreEntryDate, setCoreEntryDate] = useState(() => new Date().toLocaleDateString('en-CA'));
 
     // Material de cores (kg)
@@ -241,13 +243,8 @@ export default function InventoryPanel() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Al cambiar la cantidad, se reparte de nuevo en partes iguales entre las personas elegidas
-    const changeCoreUnits = (v: string) => {
-        setCoreEntryUnits(v);
-        const n = Math.max(0, Math.floor(Number(v) || 0));
-        setCoreEntrySplit((s) => equalSplit(s.map((x) => x.worker_id), n));
-        setCoreEntryCutSplit((s) => equalSplit(s.map((x) => x.worker_id), n));
-    };
+    // Los cores no se dividen entre personas: solo cambia el total a repartir en $
+    const changeCoreUnits = (v: string) => setCoreEntryUnits(v);
 
     // Cargar información completa de inventario
     const fetchInventoryData = async () => {
@@ -493,20 +490,12 @@ export default function InventoryPanel() {
             toast.error('Define primero el peso promedio del core armado de esta medida');
             return;
         }
-        if (coreEntrySplit.length > 0 && splitSum(coreEntrySplit) !== units) {
-            toast.error(`Armado: los cores por persona deben sumar ${units}`);
-            return;
-        }
-        if (coreEntryCutSplit.length > 0 && splitSum(coreEntryCutSplit) !== units) {
-            toast.error(`Corte de cartón: los cores por persona deben sumar ${units}`);
-            return;
-        }
+        // Cada persona queda con todos los cores; la base reparte el valor en partes iguales
+        const cutPeople = selectedCoreForEntry.has_cardboard_part ? (coreEntryCutSame ? coreEntrySplit : coreEntryCutSplit) : [];
         const workersPayload = [
-            ...coreEntrySplit.map((x) => ({ worker_id: x.worker_id, trade: 'armado', units: Number(x.value) })),
-            ...(selectedCoreForEntry.has_cardboard_part
-                ? coreEntryCutSplit.map((x) => ({ worker_id: x.worker_id, trade: 'corte_carton', units: Number(x.value) }))
-                : []),
-        ].filter((x) => x.units > 0);
+            ...coreEntrySplit.map((x) => ({ worker_id: x.worker_id, trade: 'armado' })),
+            ...cutPeople.map((x) => ({ worker_id: x.worker_id, trade: 'corte_carton' })),
+        ];
 
         try {
             setSaving(true);
@@ -530,6 +519,7 @@ export default function InventoryPanel() {
             setCoreEntryNotes('');
             setCoreEntrySplit([]);
             setCoreEntryCutSplit([]);
+            setCoreEntryCutSame(true);
             fetchInventoryData();
             setLaborRefresh((n) => n + 1);
         } catch (err: any) {
@@ -2129,7 +2119,7 @@ export default function InventoryPanel() {
 
                 return (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-                        <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl animate-in fade-in zoom-in-95">
+                        <div className="max-h-[94vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl animate-in fade-in zoom-in-95">
                             <div className="flex items-center justify-between border-b border-[#C8CDC9] pb-3">
                                 <h3 className="font-heading text-lg font-bold text-[#2E4040]">Registrar Armado de Cores</h3>
                                 <button
@@ -2248,21 +2238,55 @@ export default function InventoryPanel() {
                                     </div>
                                     <WorkerSplitEditor
                                         workers={coreWorkers}
-                                        total={units}
+                                        total={laborCost}
+                                        units={units}
                                         value={coreEntrySplit}
                                         onChange={setCoreEntrySplit}
-                                        rate={Number(c.labor_cost_per_unit || 0)}
-                                        title={`Armado (${fmtCOP(Number(c.labor_cost_per_unit || 0))} por core)`}
+                                        title={`Armaron · ${fmtCOP(Number(c.labor_cost_per_unit || 0))} por core = ${fmtCOP(laborCost)}`}
+                                        hint="Marca a todas las personas que armaron. Los cores no se dividen: el valor se reparte en partes iguales."
                                     />
                                     {c.has_cardboard_part && (
-                                        <WorkerSplitEditor
-                                            workers={coreWorkers}
-                                            total={units}
-                                            value={coreEntryCutSplit}
-                                            onChange={setCoreEntryCutSplit}
-                                            rate={Number(c.cardboard_cut_cost_per_unit || 0)}
-                                            title={`Corte de cartón (${fmtCOP(Number(c.cardboard_cut_cost_per_unit || 0))} por core)`}
-                                        />
+                                        <div className="space-y-2 rounded-md border border-[#C8CDC9]/70 bg-[#F5F7F6] p-2.5">
+                                            <label className="flex cursor-pointer items-center justify-between gap-3">
+                                                <span>
+                                                    <span className="block text-[11px] font-bold text-[#2E4040]">
+                                                        ¿Dividir también el corte de cartón? ({fmtCOP(cutCost)})
+                                                    </span>
+                                                    <span className="block text-[10px] text-[#949E97]">
+                                                        {coreEntryCutSame
+                                                            ? 'Sí: se reparte entre las mismas personas del armado.'
+                                                            : 'No: elige quién cortó el cartón (vacío = queda sin asignar).'}
+                                                    </span>
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    role="switch"
+                                                    aria-checked={coreEntryCutSame}
+                                                    onClick={() => setCoreEntryCutSame((v) => !v)}
+                                                    className={`relative h-5 w-9 shrink-0 rounded-full transition ${coreEntryCutSame ? 'bg-[#3F8346]' : 'bg-[#C8CDC9]'}`}
+                                                >
+                                                    <span
+                                                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${coreEntryCutSame ? 'left-[18px]' : 'left-0.5'}`}
+                                                    />
+                                                </button>
+                                            </label>
+                                            {coreEntryCutSame ? (
+                                                coreEntrySplit.length > 0 && (
+                                                    <p className="text-[11px] text-[#2E4040]">
+                                                        Corte: {fmtCOP(cutCost / coreEntrySplit.length)} para cada una de las {coreEntrySplit.length} persona(s).
+                                                    </p>
+                                                )
+                                            ) : (
+                                                <WorkerSplitEditor
+                                                    workers={coreWorkers}
+                                                    total={cutCost}
+                                                    units={units}
+                                                    value={coreEntryCutSplit}
+                                                    onChange={setCoreEntryCutSplit}
+                                                    title={`Cortaron el cartón · ${fmtCOP(Number(c.cardboard_cut_cost_per_unit || 0))} por core`}
+                                                />
+                                            )}
+                                        </div>
                                     )}
                                     <p className="text-[10px] text-[#949E97]">
                                         Si no eliges personas, la mano de obra queda &quot;sin asignar&quot; en Trabajadores para asignarla después.

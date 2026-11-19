@@ -7,7 +7,7 @@ import { createClient } from '@/lib/supabase/client';
 import type { PaymentMethod, TreasuryAccount, Worker, WorkerEarning, WorkerEarningKind, WorkerType } from '@/lib/types';
 import AccountSelect, { suggestAccount } from '@/components/admin/treasury/account-select';
 import { INPUT, LABEL, METHOD_LABELS, dbErrorMessage, formatCOP, todayISO } from '@/components/admin/suppliers/utils';
-import WorkerSplitEditor, { splitSum, type WorkerSplit } from './worker-split-editor';
+import WorkerSplitEditor, { shareStatus, sharesPayload, type WorkerShare } from './worker-split-editor';
 
 export const WORK_TYPE_LABEL: Record<WorkerType, string> = {
     cores: 'Cores (armado / corte)',
@@ -146,10 +146,22 @@ export function WorkerFormModal({ worker, onClose, onSaved }: { worker: Worker |
 // ---------------------------------------------------------------------------
 // Registrar trabajo manual (servicios u otros)
 // ---------------------------------------------------------------------------
-export function EarningFormModal({ workers, onClose, onSaved }: { workers: Worker[]; onClose: () => void; onSaved: () => void }) {
+export function EarningFormModal({
+    workers,
+    onClose,
+    onSaved,
+    onAssemblyInstead,
+}: {
+    workers: Worker[];
+    onClose: () => void;
+    onSaved: () => void;
+    /** Volver al registro de armado de cores */
+    onAssemblyInstead?: () => void;
+}) {
     const [supabase] = useState(() => createClient());
     const [saving, setSaving] = useState(false);
-    const [workerId, setWorkerId] = useState(workers[0]?.id || '');
+    const [people, setPeople] = useState<WorkerShare[]>([]);
+    const [custom, setCustom] = useState(false);
     const [kind, setKind] = useState<WorkerEarningKind>('servicio');
     const [date, setDate] = useState(todayISO());
     const [description, setDescription] = useState('');
@@ -161,12 +173,14 @@ export function EarningFormModal({ workers, onClose, onSaved }: { workers: Worke
 
     const submit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!workerId) return toast.error('Elige la persona');
+        if (people.length === 0) return toast.error('Elige al menos una persona');
         if (!description.trim()) return toast.error('Describe el trabajo');
         if (!(total > 0)) return toast.error('El valor debe ser mayor a 0');
+        const st = shareStatus(people, total, custom && people.length > 1);
+        if (!st.ok) return toast.error(`Los valores por persona deben sumar ${formatCOP(total)}`);
         setSaving(true);
-        const { error } = await supabase.rpc('add_worker_earning', {
-            p_worker_id: workerId,
+        const { error } = await supabase.rpc('add_worker_earnings', {
+            p_workers: sharesPayload(people, custom && people.length > 1),
             p_date: date,
             p_kind: kind,
             p_description: description.trim(),
@@ -175,23 +189,25 @@ export function EarningFormModal({ workers, onClose, onSaved }: { workers: Worke
         });
         setSaving(false);
         if (error) return toast.error('No se pudo registrar: ' + dbErrorMessage(error));
-        toast.success(`Trabajo registrado: ${formatCOP(total)} por pagar`);
+        toast.success(`Trabajo registrado: ${formatCOP(total)} por pagar${people.length > 1 ? ` entre ${people.length} personas` : ''}`);
         onSaved();
     };
 
     return (
-        <Shell title="Registrar trabajo" subtitle="Servicios u otros trabajos por pagar (el armado de cores se registra solo al armar)." onClose={onClose}>
-            <form onSubmit={submit} className="space-y-3">
+        <Shell title="Registrar trabajo" subtitle="Servicios u otros trabajos por pagar, de una o varias personas (el armado de cores se registra solo al armar)." onClose={onClose} wide>
+            <form onSubmit={submit} className="space-y-4">
+                {onAssemblyInstead && (
+                    <div className="inline-flex overflow-hidden rounded border border-[#C8CDC9] text-[11px] font-semibold">
+                        <button type="button" onClick={onAssemblyInstead} className="bg-white px-2.5 py-1 text-[#2E4040] hover:bg-[#C8CDC9]/30">
+                            Armado de cores
+                        </button>
+                        <span className="bg-[#2E4040] px-2.5 py-1 text-white">Servicio u otro</span>
+                    </div>
+                )}
                 <div className="grid grid-cols-2 gap-3">
                     <div className="col-span-2">
-                        <label className={LABEL}>Persona *</label>
-                        <select value={workerId} onChange={(e) => setWorkerId(e.target.value)} className={`${INPUT} bg-white font-semibold`}>
-                            {workers.map((w) => (
-                                <option key={w.id} value={w.id}>
-                                    {w.full_name}
-                                </option>
-                            ))}
-                        </select>
+                        <label className={LABEL}>Descripción *</label>
+                        <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Ej: Cargue de camión, limpieza de bodega" className={INPUT} autoFocus />
                     </div>
                     <div>
                         <label className={LABEL}>Tipo</label>
@@ -206,10 +222,6 @@ export function EarningFormModal({ workers, onClose, onSaved }: { workers: Worke
                     <div>
                         <label className={LABEL}>Fecha del trabajo</label>
                         <input type="date" max={todayISO()} value={date} onChange={(e) => setDate(e.target.value)} className={INPUT} />
-                    </div>
-                    <div className="col-span-2">
-                        <label className={LABEL}>Descripción *</label>
-                        <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Ej: Cargue de camión, limpieza de bodega" className={INPUT} />
                     </div>
                     <label className="col-span-2 flex items-center gap-2 text-xs font-semibold text-[#2E4040]">
                         <input type="checkbox" checked={byUnits} onChange={(e) => setByUnits(e.target.checked)} className="accent-[#3F8346]" />
@@ -228,15 +240,25 @@ export function EarningFormModal({ workers, onClose, onSaved }: { workers: Worke
                         </>
                     ) : (
                         <div className="col-span-2">
-                            <label className={LABEL}>Valor a pagar ($) *</label>
+                            <label className={LABEL}>Valor total a pagar ($) *</label>
                             <input type="number" min="0" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} className={`${INPUT} text-sm font-bold`} />
                         </div>
                     )}
                 </div>
-                <p className="text-xs text-[#2E4040]">
-                    Total: <b>{formatCOP(total)}</b>
-                </p>
-                <Footer onClose={onClose} saving={saving} label="Registrar" />
+                <div className="rounded-lg border border-[#C8CDC9] p-3">
+                    <WorkerSplitEditor
+                        workers={workers}
+                        total={total}
+                        value={people}
+                        onChange={setPeople}
+                        custom={custom && people.length > 1}
+                        onCustomChange={setCustom}
+                        title={`¿Quién hizo el trabajo? · total ${formatCOP(total)}`}
+                        hint="Marca una o varias personas. El valor se reparte en partes iguales o con un valor por persona."
+                        units={byUnits && Number(units) > 0 ? Number(units) : undefined}
+                    />
+                </div>
+                <Footer onClose={onClose} saving={saving} label={people.length > 1 ? `Registrar para ${people.length} personas` : 'Registrar'} />
             </form>
         </Shell>
     );
@@ -258,20 +280,21 @@ export function AssignEarningModal({
 }) {
     const [supabase] = useState(() => createClient());
     const [saving, setSaving] = useState(false);
-    const byUnits = earning.units != null;
-    const total = byUnits ? Number(earning.units) : Math.round(Number(earning.amount));
-    const [split, setSplit] = useState<WorkerSplit[]>(
-        earning.worker_id ? [{ worker_id: earning.worker_id, value: String(total) }] : []
+    const total = Math.round(Number(earning.amount));
+    const [custom, setCustom] = useState(false);
+    const [split, setSplit] = useState<WorkerShare[]>(
+        earning.worker_id ? [{ worker_id: earning.worker_id, amount: String(total) }] : []
     );
-    const valid = split.length > 0 && splitSum(split) === total && split.every((s) => Number(s.value) > 0);
+    const isCustom = custom && split.length > 1;
+    const valid = split.length > 0 && shareStatus(split, total, isCustom).ok;
 
     const submit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!valid) return toast.error(`Reparte exactamente ${total} ${byUnits ? 'cores' : 'pesos'} entre las personas`);
+        if (!valid) return toast.error(split.length === 0 ? 'Elige al menos una persona' : `Los valores deben sumar ${formatCOP(total)}`);
         setSaving(true);
         const { error } = await supabase.rpc('reassign_worker_earning', {
             p_id: earning.id,
-            p_splits: split.map((s) => (byUnits ? { worker_id: s.worker_id, units: Number(s.value) } : { worker_id: s.worker_id, amount: Number(s.value) })),
+            p_splits: sharesPayload(split, isCustom),
         });
         setSaving(false);
         if (error) return toast.error('No se pudo asignar: ' + dbErrorMessage(error));
@@ -280,16 +303,18 @@ export function AssignEarningModal({
     };
 
     return (
-        <Shell title={earning.worker_id ? 'Reasignar trabajo' : 'Asignar trabajo'} subtitle={`${earning.description} · ${formatCOP(Number(earning.amount))}`} onClose={onClose}>
+        <Shell title={earning.worker_id ? 'Reasignar trabajo' : 'Asignar trabajo'} subtitle={`${earning.description} · ${formatCOP(Number(earning.amount))}`} onClose={onClose} wide>
             <form onSubmit={submit} className="space-y-3">
                 <WorkerSplitEditor
                     workers={workers}
                     total={total}
                     value={split}
                     onChange={setSplit}
-                    unitLabel={byUnits ? 'cores' : '$'}
-                    rate={byUnits ? Number(earning.rate || 0) : undefined}
+                    custom={isCustom}
+                    onCustomChange={setCustom}
+                    units={earning.units != null ? Number(earning.units) : undefined}
                     title="¿Quién hizo este trabajo?"
+                    hint="Varias personas: cada una queda con los mismos cores y se reparte el valor."
                 />
                 <Footer onClose={onClose} saving={saving} label="Asignar" disabled={!valid} />
             </form>

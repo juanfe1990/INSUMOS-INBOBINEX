@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { WASTE_REASON_LABEL } from '@/lib/waste';
+import { DOCUMENT_FILTERS, documentFilterLabel, type DocumentFilter } from '@/lib/documents';
 import { ChevronDown, ChevronRight, Download, Loader2, Printer } from 'lucide-react';
 import { toast } from 'sonner';
 import { createClient } from '@/lib/supabase/client';
@@ -58,6 +59,7 @@ export default function IncomeStatement() {
     const [[from, to], setRange] = useState<[string, string]>(presetRange('mes'));
     const [basis, setBasis] = useState<'despacho' | 'pedido'>('despacho');
     const [clientId, setClientId] = useState('');
+    const [documents, setDocuments] = useState<DocumentFilter>('todos');
     const [compare, setCompare] = useState(true);
     const [taxRate, setTaxRate] = useState('35');
     const [clients, setClients] = useState<{ id: string; business_name: string }[]>([]);
@@ -81,6 +83,7 @@ export default function IncomeStatement() {
             const args = {
                 p_basis: basis,
                 p_tax_rate: (Number(taxRate) || 0) / 100,
+                p_documents: documents,
                 ...(clientId ? { p_client: clientId } : {}),
             };
             const [pf, pt] = previousRange(from, to);
@@ -96,7 +99,7 @@ export default function IncomeStatement() {
         } finally {
             setLoading(false);
         }
-    }, [supabase, from, to, basis, clientId, compare, taxRate]);
+    }, [supabase, from, to, basis, clientId, documents, compare, taxRate]);
 
     useEffect(() => {
         load();
@@ -112,7 +115,7 @@ export default function IncomeStatement() {
         push('revenue', 'Ingresos operacionales (ventas)', 'total');
         push('revenue_stretch', 'Stretch fabricado', 'sub');
         push('revenue_products', 'Productos de bodega', 'sub');
-        if (Number(cur.revenue_historical) || Number(prev?.revenue_historical)) push('revenue_historical', 'Ventas históricas (Excel)', 'sub');
+        if (Number(cur.revenue_historical) || Number(prev?.revenue_historical)) push('revenue_historical', 'Ventas históricas (Excel: facturas y remisiones)', 'sub');
         push('cost_sales', 'Costo de ventas', 'total');
         push('cost_film', 'Película consumida', 'sub');
         push('cost_cores', 'Cores', 'sub');
@@ -160,7 +163,7 @@ export default function IncomeStatement() {
 
     const exportCSV = () =>
         downloadCSV(
-            `estado-resultados-${from}-a-${to}.csv`,
+            `estado-resultados-${documents === 'todos' ? '' : documents + '-'}${from}-a-${to}.csv`,
             ['Concepto', `${from} a ${to}`, '% ventas', ...(prev ? ['Periodo anterior', 'Variación %'] : [])],
             lines.map((l) => [
                 (l.level === 'sub' ? '   ' : '') + l.label,
@@ -226,6 +229,16 @@ export default function IncomeStatement() {
                     </select>
                 </div>
                 <div>
+                    <label className="mb-1 block text-[10px] font-semibold text-[#949E97]">Documento</label>
+                    <select value={documents} onChange={(e) => setDocuments(e.target.value as DocumentFilter)} className="rounded border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs">
+                        {DOCUMENT_FILTERS.map((d) => (
+                            <option key={d.value} value={d.value}>
+                                {d.label}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+                <div>
                     <label className="mb-1 block text-[10px] font-semibold text-[#949E97]">Cliente</label>
                     <select value={clientId} onChange={(e) => setClientId(e.target.value)} className="max-w-[200px] rounded border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs">
                         <option value="">Todos (empresa completa)</option>
@@ -266,11 +279,17 @@ export default function IncomeStatement() {
                             <p className="text-[11px] text-[#949E97]">
                                 Del {formatDate(from)} al {formatDate(to)} · {cur.orders_count} pedido(s) · ventas por{' '}
                                 {basis === 'despacho' ? 'fecha de despacho' : 'fecha de pedido'} · valores sin IVA
+                                {documents !== 'todos' && ` · ${documentFilterLabel(documents).toLowerCase()}`}
                                 {clientId && ` · cliente: ${clients.find((c) => c.id === clientId)?.business_name}`}
                             </p>
                             {cur.client_filtered && (
                                 <p className="mt-1 text-[11px] text-amber-700">
                                     Con filtro de cliente se muestra hasta la utilidad bruta (los gastos son de toda la empresa).
+                                </p>
+                            )}
+                            {documents !== 'todos' && !cur.client_filtered && (
+                                <p className="mt-1 text-[11px] text-amber-700">
+                                    El filtro de documento aplica a las ventas y su costo; los gastos, mermas y movimientos de caja son de toda la empresa.
                                 </p>
                             )}
                         </div>

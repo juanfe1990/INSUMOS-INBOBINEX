@@ -11,7 +11,8 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { createClient } from '@/lib/supabase/client';
-import { formatCOP } from '@/components/admin/suppliers/utils';
+import { formatCOP, formatDate } from '@/components/admin/suppliers/utils';
+import { DOCUMENT_FILTERS, documentFilterLabel, type DocumentFilter } from '@/lib/documents';
 
 /** Umbrales de las alertas tempranas (ajustables según la política de la empresa) */
 const THRESHOLDS = {
@@ -43,16 +44,48 @@ const pct = (v: number | null | undefined, digits = 0) =>
 const ratio = (v: number | null) => (v === null || !Number.isFinite(v) ? '—' : v.toFixed(2));
 const days = (v: number | null | undefined) => (v === null || v === undefined ? '—' : `${v} días`);
 const n = (v: unknown) => Number(v) || 0;
+const iso = (d: Date) => d.toLocaleDateString('en-CA');
+const INPUT = 'rounded border border-[#C8CDC9] bg-white px-2.5 py-1.5 text-xs focus:border-[#3F8346] focus:outline-none';
+const LABEL = 'mb-1 block text-[10px] font-semibold text-[#949E97]';
+
+type Preset = 'mes' | 'mes_anterior' | 'trimestre' | 'anio' | '30' | '90' | 'personalizado';
+const PRESETS: { key: Preset; label: string }[] = [
+    { key: 'mes', label: 'Este mes' },
+    { key: 'mes_anterior', label: 'Mes anterior' },
+    { key: 'trimestre', label: 'Trimestre actual' },
+    { key: 'anio', label: 'Año actual' },
+    { key: '30', label: 'Últimos 30 días' },
+    { key: '90', label: 'Últimos 90 días' },
+    { key: 'personalizado', label: 'Personalizado' },
+];
+function rangeFor(p: Preset, from: string, to: string): [string, string] {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    if (p === 'mes') return [iso(new Date(y, m, 1)), iso(now)];
+    if (p === 'mes_anterior') return [iso(new Date(y, m - 1, 1)), iso(new Date(y, m, 0))];
+    if (p === 'trimestre') return [iso(new Date(y, Math.floor(m / 3) * 3, 1)), iso(now)];
+    if (p === 'anio') return [iso(new Date(y, 0, 1)), iso(now)];
+    if (p === '30') return [iso(new Date(now.getTime() - 29 * 864e5)), iso(now)];
+    if (p === '90') return [iso(new Date(now.getTime() - 89 * 864e5)), iso(now)];
+    return [from, to];
+}
 
 export default function FinancialDashboard() {
     const [supabase] = useState(() => createClient());
     const [data, setData] = useState<any>(null);
     const [loading, setLoading] = useState(true);
+    const [preset, setPreset] = useState<Preset>('mes');
+    const [customFrom, setCustomFrom] = useState(() => iso(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
+    const [customTo, setCustomTo] = useState(() => iso(new Date()));
+    const [documents, setDocuments] = useState<DocumentFilter>('todos');
+    const [from, to] = rangeFor(preset, customFrom, customTo);
 
     const load = useCallback(async () => {
+        if (!from || !to || from > to) return;
         try {
             setLoading(true);
-            const { data: d, error } = await supabase.rpc('financial_dashboard');
+            const { data: d, error } = await supabase.rpc('financial_dashboard', { p_from: from, p_to: to, p_documents: documents });
             if (error) throw error;
             setData(d);
         } catch (err: any) {
@@ -60,7 +93,7 @@ export default function FinancialDashboard() {
         } finally {
             setLoading(false);
         }
-    }, [supabase]);
+    }, [supabase, from, to, documents]);
 
     useEffect(() => {
         load();
@@ -83,7 +116,11 @@ export default function FinancialDashboard() {
         const opMargin = rev > 0 ? n(pm.operating_profit) / rev : null;
         const netMargin = rev > 0 ? n(pm.net_profit) / rev : null;
         const fixed = n(data.expenses.fixed_monthly);
+        const periodDays = n(data.period?.days) || 30;
+        const monthsInPeriod = periodDays / 30.4;
+        // Punto de equilibrio mensual y el que corresponde a la duración del periodo elegido
         const breakEven = grossMargin && grossMargin > 0 ? fixed / grossMargin : null;
+        const breakEvenPeriod = breakEven ? breakEven * monthsInPeriod : null;
         const salesMonth = n(data.sales.month);
         const prevSame = n(data.sales.prev_month_same_day);
         const growth = prevSame > 0 ? salesMonth / prevSame - 1 : null;
@@ -106,7 +143,9 @@ export default function FinancialDashboard() {
             netMargin,
             fixed,
             breakEven,
-            breakEvenProgress: breakEven ? salesMonth / breakEven : null,
+            breakEvenPeriod,
+            breakEvenProgress: breakEvenPeriod ? salesMonth / breakEvenPeriod : null,
+            periodDays,
             salesMonth,
             growth,
             orders: n(data.sales.orders_month),
@@ -159,23 +198,25 @@ export default function FinancialDashboard() {
         if (n(data.expenses.overdue) > 0)
             a.push({ severity: 'warning', process: 'Gastos fijos', title: `Gastos fijos vencidos: ${formatCOP(n(data.expenses.overdue))}`, detail: `${data.expenses.overdue_count} pago(s) sin registrar (nómina, arriendo, servicios...).` });
         if (k.expenseToSales !== null && k.expenseToSales > T.expenseToSalesWarn)
-            a.push({ severity: 'warning', process: 'Gastos fijos', title: `Gastos operacionales altos: ${pct(k.expenseToSales)} de las ventas del mes`, detail: 'Revisa el estado de resultados por categoría.' });
+            a.push({ severity: 'warning', process: 'Gastos fijos', title: `Gastos operacionales altos: ${pct(k.expenseToSales)} de las ventas del periodo`, detail: 'Revisa el estado de resultados por categoría.' });
 
         // Rentabilidad y ventas
         if (k.rev > 0 && k.netMargin !== null && k.netMargin < 0)
-            a.push({ severity: 'critical', process: 'Rentabilidad', title: 'El mes va con pérdida neta', detail: `Margen neto ${pct(k.netMargin, 1)} a la fecha.` });
+            a.push({ severity: 'critical', process: 'Rentabilidad', title: 'El periodo va con pérdida neta', detail: `Margen neto ${pct(k.netMargin, 1)} (${formatCOP(n(data.pnl_month.net_profit))}).` });
         if (k.grossMargin !== null && k.grossMargin < T.grossMarginWarn)
             a.push({ severity: 'warning', process: 'Rentabilidad', title: `Margen bruto bajo (${pct(k.grossMargin, 1)})`, detail: 'Revisa precios vs. costo de película, cores y productos.' });
         if (k.breakEven && k.breakEvenProgress !== null && k.breakEvenProgress < 1) {
-            const dayOfMonth = new Date().getDate();
-            const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
-            if (k.breakEvenProgress < dayOfMonth / daysInMonth)
-                a.push({ severity: 'warning', process: 'Ventas', title: `Por debajo del ritmo del punto de equilibrio (${pct(k.breakEvenProgress)})`, detail: `Se necesitan ${formatCOP(k.breakEven)} de ventas al mes para cubrir los gastos fijos.` });
+            // Mes en curso: se compara contra el ritmo (día del mes); periodos cerrados: contra el total
+            const now = new Date();
+            const inCurrentMonth = preset === 'mes';
+            const expected = inCurrentMonth ? now.getDate() / new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() : 1;
+            if (k.breakEvenProgress < expected)
+                a.push({ severity: 'warning', process: 'Ventas', title: `${inCurrentMonth ? 'Por debajo del ritmo del' : 'Ventas del periodo bajo el'} punto de equilibrio (${pct(k.breakEvenProgress)})`, detail: `Se necesitan ${formatCOP(k.breakEven)} de ventas al mes para cubrir los gastos fijos (${formatCOP(k.breakEvenPeriod || 0)} en este periodo).` });
         }
         if (k.growth !== null && k.growth < T.salesDropWarn)
-            a.push({ severity: 'warning', process: 'Ventas', title: `Ventas ${pct(k.growth)} vs. el mes anterior a la misma fecha`, detail: 'Caída significativa del ritmo comercial.' });
+            a.push({ severity: 'warning', process: 'Ventas', title: `Ventas ${pct(k.growth)} vs. el periodo anterior`, detail: `Caída significativa frente a ${formatDate(data.period.prev_from)} – ${formatDate(data.period.prev_to)}.` });
         if (n(data.sales.top_client_share_90) > T.topClientShareWarn && n(data.sales.active_clients_90) > 1)
-            a.push({ severity: 'warning', process: 'Ventas', title: `Alta dependencia de un cliente (${pct(n(data.sales.top_client_share_90))})`, detail: `${data.sales.top_client_90} concentra la mayoría de las ventas de 90 días.` });
+            a.push({ severity: 'warning', process: 'Ventas', title: `Alta dependencia de un cliente (${pct(n(data.sales.top_client_share_90))})`, detail: `${data.sales.top_client_90} concentra la mayoría de las ventas del periodo.` });
 
         // Inventario y producción
         if (n(data.inventory.low_stock) > 0)
@@ -186,11 +227,11 @@ export default function FinancialDashboard() {
             const used = n(w.film_used_kg_month) + n(w.film_kg_month);
             const share = used > 0 ? n(w.film_kg_month) / used : null;
             if (share !== null && share >= T.filmWasteCritical)
-                a.push({ severity: 'critical', process: 'Producción', title: `Desperdicio de película alto (${pct(share, 1)})`, detail: `${n(w.film_kg_month).toLocaleString('es-CO')} kg desperdiciados este mes. Revisa refiles, arranques y rollos defectuosos en Inventarios → Desperdicios.` });
+                a.push({ severity: 'critical', process: 'Producción', title: `Desperdicio de película alto (${pct(share, 1)})`, detail: `${n(w.film_kg_month).toLocaleString('es-CO')} kg desperdiciados en el periodo. Revisa refiles, arranques y rollos defectuosos en Inventarios → Desperdicios.` });
             else if (share !== null && share >= T.filmWasteWarn)
                 a.push({ severity: 'warning', process: 'Producción', title: `Desperdicio de película sobre la meta (${pct(share, 1)})`, detail: `Meta: menos de ${pct(T.filmWasteWarn)} de la película usada.` });
             if (n(w.cost_prev_month) > 0 && n(w.cost_month) > n(w.cost_prev_month) * (1 + T.wasteGrowthWarn))
-                a.push({ severity: 'warning', process: 'Inventario', title: 'El costo de desperdicio creció frente al mes anterior', detail: `${formatCOP(n(w.cost_month))} este mes vs. ${formatCOP(n(w.cost_prev_month))} el mes anterior.` });
+                a.push({ severity: 'warning', process: 'Inventario', title: 'El costo de desperdicio creció frente al periodo anterior', detail: `${formatCOP(n(w.cost_month))} en el periodo vs. ${formatCOP(n(w.cost_prev_month))} en el anterior.` });
         }
         if (n(data.production.late) > 0)
             a.push({ severity: 'critical', process: 'Producción', title: `${data.production.late} pedido(s) atrasados`, detail: 'Fecha de entrega vencida y aún no despachados.' });
@@ -216,7 +257,7 @@ export default function FinancialDashboard() {
 
         const order: Record<Severity, number> = { critical: 0, warning: 1, info: 2 };
         return a.sort((x, y) => order[x.severity] - order[y.severity]);
-    }, [data, k]);
+    }, [data, k, preset]);
 
     if (loading && !data) {
         return (
@@ -244,18 +285,61 @@ export default function FinancialDashboard() {
 
     return (
         <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`}>
-            <div className="flex items-center justify-between">
-                <p className="text-xs text-[#949E97]">
-                    Calculado {new Date(data.generated_at).toLocaleString('es-CO')} · rentabilidad del mes a la fecha (por fecha de
-                    pedido, sin IVA)
+            {/* Filtros: una fila */}
+            <div className="flex flex-wrap items-end gap-2 rounded-xl border border-[#C8CDC9] bg-white p-3 shadow-sm">
+                <div>
+                    <label className={LABEL}>Periodo</label>
+                    <select value={preset} onChange={(e) => setPreset(e.target.value as Preset)} className={INPUT}>
+                        {PRESETS.map((p) => (
+                            <option key={p.key} value={p.key}>
+                                {p.label}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+                {preset === 'personalizado' && (
+                    <>
+                        <div>
+                            <label className={LABEL}>Desde</label>
+                            <input type="date" value={customFrom} max={customTo} onChange={(e) => setCustomFrom(e.target.value)} className={INPUT} />
+                        </div>
+                        <div>
+                            <label className={LABEL}>Hasta (fecha de corte)</label>
+                            <input type="date" value={customTo} min={customFrom} max={iso(new Date())} onChange={(e) => setCustomTo(e.target.value)} className={INPUT} />
+                        </div>
+                    </>
+                )}
+                <div>
+                    <label className={LABEL}>Documento</label>
+                    <select value={documents} onChange={(e) => setDocuments(e.target.value as DocumentFilter)} className={INPUT}>
+                        {DOCUMENT_FILTERS.map((d) => (
+                            <option key={d.value} value={d.value}>
+                                {d.label}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+                <p className="mb-1.5 text-[11px] text-[#949E97]">
+                    {formatDate(data.period.from)} – {formatDate(data.period.to)} ({data.period.days} días) · se compara con{' '}
+                    {formatDate(data.period.prev_from)} – {formatDate(data.period.prev_to)} · por fecha de pedido, sin IVA
+                    {documents !== 'todos' && ` · ${documentFilterLabel(documents).toLowerCase()}`}
                 </p>
                 <button
                     onClick={load}
-                    className="flex items-center gap-1.5 rounded-lg border border-[#C8CDC9] bg-white px-3 py-1.5 text-xs font-semibold text-[#2E4040] hover:bg-[#C8CDC9]/20"
+                    className="mb-0.5 ml-auto flex items-center gap-1.5 rounded-lg border border-[#C8CDC9] bg-white px-3 py-1.5 text-xs font-semibold text-[#2E4040] hover:bg-[#C8CDC9]/20"
                 >
-                    <RefreshCw className="h-3.5 w-3.5 text-[#3F8346]" /> Recalcular
+                    {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-[#3F8346]" /> : <RefreshCw className="h-3.5 w-3.5 text-[#3F8346]" />} Recalcular
                 </button>
             </div>
+            {!data.period.is_today && (
+                <div className="flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">
+                    <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
+                    <span>
+                        Caja, cartera, proveedores y gastos pendientes se muestran <b>al {formatDate(data.period.to)}</b>. El inventario, la
+                        producción y los controles de tesorería no tienen foto histórica: se muestran <b>a hoy</b>.
+                    </span>
+                </div>
+            )}
 
             {/* Alertas tempranas */}
             <section className="rounded-xl border border-[#C8CDC9]/60 bg-white p-5 shadow-sm">
@@ -301,20 +385,20 @@ export default function FinancialDashboard() {
 
             {/* Indicadores por proceso */}
             <Group title="Liquidez">
-                <Tile label="Disponible (caja + bancos)" value={formatCOP(k.cash)} sub={`Bancos ${formatCOP(n(data.cash.banks))} · efectivo ${formatCOP(n(data.cash.cash) + n(data.cash.petty))}`} />
+                <Tile label={`Disponible (caja + bancos)${data.period.is_today ? '' : ' al corte'}`} value={formatCOP(k.cash)} sub={`Bancos ${formatCOP(n(data.cash.banks))} · efectivo ${formatCOP(n(data.cash.cash) + n(data.cash.petty))}`} />
                 <Tile label="Obligaciones próximos 15 días" value={formatCOP(k.oblig15)} sub={`Cobertura ${ratio(k.coverage)}x`} />
                 <Tile label="Capital de trabajo" value={formatCOP(k.workingCapital)} sub="Disponible + cartera + inventario − pasivos corrientes" />
                 <Tile label="Razón corriente / Prueba ácida" value={`${ratio(k.currentRatio)} / ${ratio(k.acidTest)}`} sub="Activo corriente ÷ pasivo corriente (ácida sin inventario)" />
             </Group>
 
-            <Group title="Rentabilidad del mes">
-                <Tile label="Ventas del mes (sin IVA)" value={formatCOP(k.salesMonth)} sub={k.growth === null ? 'Sin base comparable' : `${k.growth >= 0 ? '+' : ''}${pct(k.growth)} vs. mes anterior a la fecha`} />
+            <Group title="Rentabilidad del periodo">
+                <Tile label="Ventas del periodo (sin IVA)" value={formatCOP(k.salesMonth)} sub={k.growth === null ? 'Sin base comparable' : `${k.growth >= 0 ? '+' : ''}${pct(k.growth)} vs. periodo anterior`} />
                 <Tile label="Margen bruto" value={pct(k.grossMargin, 1)} sub={`Utilidad bruta ${formatCOP(n(pm.gross_profit))}`} />
                 <Tile label="Margen operacional / neto" value={`${pct(k.opMargin, 1)} / ${pct(k.netMargin, 1)}`} sub={`Utilidad neta ${formatCOP(n(pm.net_profit))}`} />
                 <Tile
-                    label="Punto de equilibrio mensual"
-                    value={k.breakEven ? formatCOP(k.breakEven) : '—'}
-                    sub={k.breakEven ? `Avance ${pct(k.breakEvenProgress)} · gastos fijos ${formatCOP(k.fixed)}` : 'Requiere gastos fijos y margen'}
+                    label="Punto de equilibrio del periodo"
+                    value={k.breakEvenPeriod ? formatCOP(k.breakEvenPeriod) : '—'}
+                    sub={k.breakEven ? `Avance ${pct(k.breakEvenProgress)} · ${formatCOP(k.breakEven)}/mes (gastos fijos ${formatCOP(k.fixed)}/mes)` : 'Requiere gastos fijos y margen'}
                     progress={k.breakEvenProgress}
                 />
             </Group>
@@ -322,16 +406,16 @@ export default function FinancialDashboard() {
             <Group title="Cartera, proveedores y ciclo de caja">
                 <Tile label="Cuentas por cobrar" value={formatCOP(k.ar)} sub={`Vencido ${formatCOP(n(data.receivables.overdue))} (${pct(k.overdueShare)})`} />
                 <Tile label="Cuentas por pagar" value={formatCOP(k.ap)} sub={`Vencido ${formatCOP(n(data.payables.overdue))}`} />
-                <Tile label="Días cartera / proveedores / inventario" value={`${k.dso ?? '—'} / ${k.dpo ?? '—'} / ${k.dio ?? '—'}`} sub="Base últimos 90 días" />
+                <Tile label="Días cartera / proveedores / inventario" value={`${k.dso ?? '—'} / ${k.dpo ?? '—'} / ${k.dio ?? '—'}`} sub={`Base: el periodo (${k.periodDays} días)`} />
                 <Tile label="Ciclo de conversión de efectivo" value={days(k.cashCycle)} sub="Días cartera + inventario − proveedores" />
             </Group>
 
             <Group title="Ventas, inventario y producción">
-                <Tile label="Pedidos del mes / ticket promedio" value={`${k.orders} / ${k.avgTicket ? formatCOP(k.avgTicket) : '—'}`} sub={`${data.sales.active_clients_90} clientes activos en 90 días`} />
-                <Tile label="Cliente principal (90 días)" value={pct(n(data.sales.top_client_share_90))} sub={data.sales.top_client_90 || 'Sin ventas'} />
-                <Tile label="Inventario valorizado" value={formatCOP(k.inv)} sub={`${data.inventory.low_stock} ítem(s) bajo mínimo`} />
+                <Tile label="Pedidos del periodo / ticket promedio" value={`${k.orders} / ${k.avgTicket ? formatCOP(k.avgTicket) : '—'}`} sub={`${data.sales.active_clients_90} clientes con compras · antes ${n(data.sales.orders_prev_month)} pedidos`} />
+                <Tile label="Cliente principal del periodo" value={pct(n(data.sales.top_client_share_90))} sub={data.sales.top_client_90 || 'Sin ventas'} />
+                <Tile label={`Inventario valorizado${data.period.is_today ? '' : ' (a hoy)'}`} value={formatCOP(k.inv)} sub={`${data.inventory.low_stock} ítem(s) bajo mínimo`} />
                 <Tile
-                    label="Producción"
+                    label={`Producción${data.period.is_today ? '' : ' (a hoy)'}`}
                     value={`${data.production.queue + data.production.winding} en proceso`}
                     sub={`${data.production.ready} listos · ${data.production.late} atrasados`}
                 />
@@ -340,11 +424,11 @@ export default function FinancialDashboard() {
                     const used = n(w.film_used_kg_month) + n(w.film_kg_month);
                     return (
                         <Tile
-                            label="Desperdicio del mes"
+                            label="Desperdicio del periodo"
                             value={formatCOP(n(w.cost_month))}
                             sub={`Película ${n(w.film_kg_month).toLocaleString('es-CO', { maximumFractionDigits: 1 })} kg${
                                 used > 0 ? ` (${pct(n(w.film_kg_month) / used, 1)} de lo usado)` : ''
-                            } · mes anterior ${formatCOP(n(w.cost_prev_month))}`}
+                            } · periodo anterior ${formatCOP(n(w.cost_prev_month))}`}
                         />
                     );
                 })()}
@@ -353,13 +437,13 @@ export default function FinancialDashboard() {
             <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
                 {/* P&G resumido: mes actual vs anterior */}
                 <section className="rounded-xl border border-[#C8CDC9]/60 bg-white p-5 shadow-sm">
-                    <h3 className="mb-3 text-sm font-bold text-[#2E4040]">Resultados: mes actual vs. mes anterior</h3>
+                    <h3 className="mb-3 text-sm font-bold text-[#2E4040]">Resultados: periodo vs. periodo anterior</h3>
                     <table className="w-full text-xs">
                         <thead className="text-[#949E97]">
                             <tr className="border-b border-[#C8CDC9]">
                                 <th className="py-1.5 text-left font-semibold">Concepto</th>
-                                <th className="py-1.5 text-right font-semibold">Mes a la fecha</th>
-                                <th className="py-1.5 text-right font-semibold">Mes anterior</th>
+                                <th className="py-1.5 text-right font-semibold">Periodo</th>
+                                <th className="py-1.5 text-right font-semibold" title={`${data.period.prev_from} a ${data.period.prev_to}`}>Periodo anterior</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-[#C8CDC9]/40 text-[#2E4040]" style={{ fontVariantNumeric: 'tabular-nums' }}>
@@ -383,7 +467,7 @@ export default function FinancialDashboard() {
 
                 {/* Composición del inventario: barras de un solo tono + valores en texto */}
                 <section className="rounded-xl border border-[#C8CDC9]/60 bg-white p-5 shadow-sm">
-                    <h3 className="mb-3 text-sm font-bold text-[#2E4040]">Composición del inventario</h3>
+                    <h3 className="mb-3 text-sm font-bold text-[#2E4040]">Composición del inventario (a hoy)</h3>
                     <div className="space-y-2.5">
                         {invRows.map((r) => (
                             <div key={r.label} className="text-xs" title={`${r.label}: ${formatCOP(r.value)}`}>
@@ -400,7 +484,7 @@ export default function FinancialDashboard() {
                             </div>
                         ))}
                     </div>
-                    <h3 className="mb-2 mt-5 text-sm font-bold text-[#2E4040]">Saldos por cuenta</h3>
+                    <h3 className="mb-2 mt-5 text-sm font-bold text-[#2E4040]">Saldos por cuenta{data.period.is_today ? '' : ` al ${formatDate(data.period.to)}`}</h3>
                     <table className="w-full text-xs" style={{ fontVariantNumeric: 'tabular-nums' }}>
                         <tbody className="divide-y divide-[#C8CDC9]/40">
                             {(data.cash.accounts as any[]).map((a) => (

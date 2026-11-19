@@ -154,6 +154,8 @@ export type Order = {
     order_number: number;
     /** Número de factura (ej. "FE 310") */
     invoice_number?: string | null;
+    /** Documento con el que sale: factura (electrónica) o remisión */
+    document_type?: 'factura' | 'remision';
     /** Pedido histórico cargado desde Excel: sin stretch ni inventario, fuera del P&G */
     is_historical?: boolean;
     historical_cost?: number | null;
@@ -303,6 +305,8 @@ export type WorkerEarning = {
     units: number | null;
     rate: number | null;
     amount: number;
+    /** Entre cuántas personas se repartió el valor (cada una conserva el total de cores) */
+    shared_with?: number;
     payment_id: string | null;
     created_by: string | null;
     created_at: string;

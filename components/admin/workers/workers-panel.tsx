@@ -22,6 +22,7 @@ import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/auth-context';
 import type { Worker, WorkerEarning, WorkerPayment } from '@/lib/types';
 import { useConfirm } from '@/components/admin/confirm-dialog';
+import CoreAssemblyModal from './core-assembly-modal';
 import { METHOD_LABELS, dbErrorMessage, downloadCSV, formatCOP } from '@/components/admin/suppliers/utils';
 import {
     AssignEarningModal,
@@ -80,7 +81,8 @@ export default function WorkersPanel() {
     const [selected, setSelected] = useState<Set<string>>(new Set());
 
     const [workerForm, setWorkerForm] = useState<{ open: boolean; worker: Worker | null }>({ open: false, worker: null });
-    const [showEarningForm, setShowEarningForm] = useState(false);
+    // Registrar trabajo: armado de cores (por defecto, como la app) o servicio u otro
+    const [workForm, setWorkForm] = useState<null | 'armado' | 'servicio'>(null);
     const [assignTarget, setAssignTarget] = useState<WorkerEarning | null>(null);
     const [paying, setPaying] = useState<WorkerEarning[] | null>(null);
     const [openBatch, setOpenBatch] = useState<string | null>(null);
@@ -248,7 +250,7 @@ export default function WorkersPanel() {
                 </div>
                 <div className="flex gap-2">
                     <button
-                        onClick={() => setShowEarningForm(true)}
+                        onClick={() => setWorkForm('armado')}
                         disabled={activeWorkers.length === 0}
                         className="flex items-center gap-1.5 rounded-md border border-[#C8CDC9] bg-white px-3 py-2 text-xs font-semibold text-[#2E4040] hover:bg-[#C8CDC9]/20 disabled:opacity-40"
                     >
@@ -414,6 +416,9 @@ export default function WorkersPanel() {
                                                         </td>
                                                         <td className="whitespace-nowrap py-2 pr-2 text-right text-[#949E97]">
                                                             {e.units != null ? `${Number(e.units).toLocaleString('es-CO')} × ${formatCOP(Number(e.rate || 0))}` : ''}
+                                                            {Number(e.shared_with || 1) > 1 && (
+                                                                <span className="block text-[10px]">÷ {e.shared_with} personas</span>
+                                                            )}
                                                         </td>
                                                         <td className="py-2 pr-2 text-right font-bold">{formatCOP(Number(e.amount))}</td>
                                                         <td className="whitespace-nowrap py-2 pr-3 text-right">
@@ -588,12 +593,24 @@ export default function WorkersPanel() {
                     }}
                 />
             )}
-            {showEarningForm && (
+            {workForm === 'armado' && (
+                <CoreAssemblyModal
+                    workers={activeWorkers}
+                    onClose={() => setWorkForm(null)}
+                    onServiceInstead={() => setWorkForm('servicio')}
+                    onSaved={() => {
+                        setWorkForm(null);
+                        load();
+                    }}
+                />
+            )}
+            {workForm === 'servicio' && (
                 <EarningFormModal
                     workers={activeWorkers}
-                    onClose={() => setShowEarningForm(false)}
+                    onClose={() => setWorkForm(null)}
+                    onAssemblyInstead={() => setWorkForm('armado')}
                     onSaved={() => {
-                        setShowEarningForm(false);
+                        setWorkForm(null);
                         load();
                     }}
                 />

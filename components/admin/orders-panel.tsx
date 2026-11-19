@@ -22,6 +22,7 @@ import OrderProductsEditor, {
 import { useConfirm } from '@/components/admin/confirm-dialog';
 import StretchLinesEditor from '@/components/admin/orders/stretch-lines-editor';
 import { analyzeStretch, compatibleCores, newStretchLine, stretchPayload, type StretchLine } from '@/lib/stretch-lines';
+import { DOCUMENT_LABEL, type DocumentType } from '@/lib/documents';
 import { templatesToLines } from '@/lib/client-templates';
 import type { ClientOrderTemplate } from '@/lib/types';
 import {
@@ -109,6 +110,7 @@ export default function OrdersPanel() {
     const [clientTemplates, setClientTemplates] = useState<ClientOrderTemplate[]>([]);
     // Facturación: IVA opcional y plazo de pago (por defecto el pactado con el cliente)
     const [applyVat, setApplyVat] = useState(true);
+    const [documentType, setDocumentType] = useState<DocumentType>('factura');
     const [paymentTerms, setPaymentTerms] = useState('0');
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [confirmDialog, confirm] = useConfirm();
@@ -288,6 +290,7 @@ export default function OrdersPanel() {
                     delivery_address: deliveryAddress,
                     notes,
                     apply_vat: applyVat,
+                    document_type: documentType,
                     payment_terms_days: Math.max(0, Math.floor(Number(paymentTerms) || 0)),
                 },
                 p_stretch: stretchLines.length > 0 ? stretchPayload(stretchLines) : null,
@@ -312,6 +315,7 @@ export default function OrdersPanel() {
             setStretchLines([]);
             setClientTemplates([]);
             setApplyVat(true);
+            setDocumentType('factura');
             fetchData();
         } catch (err: any) {
             toast.error('Error al registrar pedido: ' + (err.message || 'Error'));
@@ -779,6 +783,7 @@ export default function OrdersPanel() {
                                                     {formatCOP(Number(order.total_amount || 0))}
                                                     <span className="ml-1 font-normal text-[#949E97]">
                                                         {order.apply_vat ? 'con IVA' : 'sin IVA'}
+                                                        {order.document_type === 'remision' && ' · remisión'}
                                                     </span>
                                                 </div>
                                                 {order.status !== 'cancelado' && Number(order.total_amount) > 0 && (() => {
@@ -1052,6 +1057,29 @@ export default function OrdersPanel() {
                             <div className="rounded-lg border border-[#C8CDC9] bg-white p-3.5">
                                 <div className="flex flex-wrap items-start justify-between gap-3">
                                     <div className="space-y-2">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-[11px] font-semibold text-[#2E4040]">Documento</span>
+                                            <div className="inline-flex overflow-hidden rounded border border-[#C8CDC9]">
+                                                {(['factura', 'remision'] as DocumentType[]).map((d) => (
+                                                    <button
+                                                        key={d}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setDocumentType(d);
+                                                            // La remisión normalmente sale sin IVA; la factura con IVA (se puede cambiar)
+                                                            setApplyVat(d === 'factura');
+                                                        }}
+                                                        className={`px-2.5 py-1 text-[11px] font-semibold transition ${
+                                                            documentType === d
+                                                                ? 'bg-[#2E4040] text-white'
+                                                                : 'bg-white text-[#2E4040] hover:bg-[#C8CDC9]/30'
+                                                        }`}
+                                                    >
+                                                        {DOCUMENT_LABEL[d]}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
                                         <div className="flex items-center gap-2">
                                             <button
                                                 type="button"

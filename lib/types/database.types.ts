@@ -238,6 +238,7 @@ export interface Database {
           paid_amount: number;
           payment_status: ReceivableStatus;
           invoice_number: string | null;
+          document_type: string;
           is_historical: boolean;
           historical_cost: number | null;
           historical_description: string | null;
@@ -1523,11 +1524,11 @@ export interface Database {
         Returns: undefined;
       };
       income_statement: {
-        Args: { p_from: string; p_to: string; p_basis?: string; p_client?: string; p_tax_rate?: number };
+        Args: { p_from: string; p_to: string; p_basis?: string; p_client?: string; p_tax_rate?: number; p_documents?: string };
         Returns: Json;
       };
       financial_dashboard: {
-        Args: Record<string, never>;
+        Args: { p_from?: string; p_to?: string; p_documents?: string };
         Returns: Json;
       };
       generate_recurring_expenses: {
@@ -1558,6 +1559,18 @@ export interface Database {
         };
         Returns: string;
       };
+      add_worker_earnings: {
+        Args: {
+          p_workers: Json;
+          p_date: string;
+          p_kind: string;
+          p_description: string;
+          p_amount: number;
+          p_units?: number;
+          p_rate?: number;
+        };
+        Returns: number;
+      };
       reassign_worker_earning: {
         Args: { p_id: string; p_splits: Json };
         Returns: number;
@@ -1586,7 +1599,7 @@ export interface Database {
         Returns: number;
       };
       clients_dashboard: {
-        Args: { p_from: string; p_to: string };
+        Args: { p_from: string; p_to: string; p_documents?: string };
         Returns: Json;
       };
       register_waste: {
